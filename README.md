@@ -31,6 +31,7 @@ farmora-v2/
 │   └── combined_agriculture_documents.md   40 DA-ATI leaflets, already split into sections
 ├── static/
 │   ├── fonts/poppins.regular.ttf
+│   ├── images/               Favicon (favicon.ico, favicon.png, apple-touch-icon.png)
 │   └── js/script.js          Chat interface: sidebar, streaming, stop, edit, suggestions
 ├── templates/
 │   └── index.html            Page layout: sidebar, chat area, input
