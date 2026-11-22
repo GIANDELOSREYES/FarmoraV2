@@ -45,6 +45,10 @@ const toast = document.getElementById("toast");
 // after the answer, followed by the list of documents used.
 const SOURCES_MARKER = "[[FARMORA_SOURCES]]";
 
+// Show the documents each answer came from under the answer.
+// Off, so Farmora feels like a person talking, not a search tool.
+const SHOW_SOURCES = false;
+
 let chats = [];              // all chats shown in the sidebar
 let currentChatId = null;    // the open chat (null means a new, unsaved chat)
 let currentMessages = [];    // the messages of the open chat
@@ -490,7 +494,7 @@ function messageHtml(message, index, isLast) {
 
     // Farmora's answer
     let sourcesHtml = "";
-    if (message.sources && message.sources.length > 0) {
+    if (SHOW_SOURCES && message.sources && message.sources.length > 0) {
         let chips = "";
         for (const source of message.sources) {
             chips += `<span class="px-2 py-0.5 rounded-full bg-green-50 text-darkGreen border border-greenSolid/20">${escapeHtml(source)}</span>`;

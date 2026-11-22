@@ -14,7 +14,7 @@ Version 2 adds ChatGPT-style features on top of Farmora v1.
 | **Delete a conversation** | Click the trash icon at the top right of the open chat, or next to any chat in the sidebar. A dialog asks you to confirm. The chat and all its messages are removed from `farmora.db`. |
 | **Delete all chats** | Click **Delete all chats** at the bottom of the sidebar and confirm. |
 | **Edit a question** | Hover over your question and click the pencil. The question becomes a text box: **Save** (or Enter) gets a new answer, **Cancel** (or Esc) keeps the old one. Answers and messages after the edited question are removed, because they replied to the old question. |
-| **Sources** | Each answer lists the documents it was based on. |
+| **Natural answers** | Farmora talks like a person: it never mentions documents, excerpts or sources. The documents used are still saved with each answer; set `SHOW_SOURCES = true` in `static/js/script.js` to show them under answers. |
 | **Calm replies to profanity** | Profanity is removed before searching. A farming question still gets its answer, with a calm opening line; a message with no farming question gets a calm, supportive reply. Edit `PROFANE_WORDS` in `retrieve.py` to change the list. |
 | **Stop** | While Farmora answers, the send button becomes a square Stop button. The partial answer is kept and marked "Answer stopped." |
 | **Regenerate** | Click the circular arrow under the latest answer to answer the same question again. |
@@ -87,7 +87,8 @@ Generated while running (not included): `.venv/`, `vector_db/`, `farmora.db`.
 1. **Sections, not blind cuts.** The document is already divided into sections, each starting with a line like `[Topic: … | Document: … | Section: …]`. `ingest.py` keeps every section whole, and also cuts it into small overlapping passages (600 characters, 120 overlap). The embedding model reads only the first 256 tokens of a text, so the search compares the question with these small passages, and the model is given the *whole* section they belong to.
 2. **Relevance filtering.** Each section is scored by its best passage (cosine similarity, 0–1). If even the best score is below `MIN_RELEVANCE` (0.48), Farmora replies "I'm sorry, but I do not have sufficient information to answer your question." without asking the model. Otherwise it keeps sections within `SCORE_WINDOW` (0.12) of the best one, up to 6 sections and 12,000 characters, and adds a section's "(continued)" neighbour.
 3. **Grounded prompt.** Each excerpt is labelled with its document, crop and section. The model is told to use only the excerpts, to answer only the parts the documents support, and to refuse with the same sentence when they cover nothing. It is also asked for complete, well-organised answers: headings, every step in order, quantities, examples and precautions.
-4. **Checks.** Numbers in an answer that don't appear in the excerpts are printed in the terminal for review. Follow-up suggestions are only shown if the documents can answer them.
+4. **Natural voice.** The model is given the sections as its own "farming knowledge", without numbered labels, and told never to mention where its knowledge comes from. As a safety net, `AnswerCleaner` in `retrieve.py` removes leftovers such as "According to [Excerpt 5]," or "The question asks ..." while the answer streams.
+5. **Checks.** Numbers in an answer that don't appear in the excerpts are printed in the terminal for review. Follow-up suggestions are only shown if the documents can answer them.
 
 ### Database (`database.py`)
 

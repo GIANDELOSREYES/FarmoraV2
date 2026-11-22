@@ -70,7 +70,7 @@ CALM_ANSWER = (
     "I can tell you're frustrated, and that's completely understandable. "
     "Farming problems can be stressful. Let's take it one step at a time.\n\n"
     "Tell me what's happening: the crop or animal, what you're seeing, "
-    "and when it started. I'll look for what my farming documents say about it."
+    "and when it started, and I'll help you figure it out."
 )
 
 # Added before the answer when a farming question includes profanity
@@ -79,7 +79,7 @@ CALM_OPENING = "I understand this is frustrating. Let's work through it together
 GREETING_ANSWER = (
     "Hello! I'm Farmora, your farming guide. Ask me about crops, soil, "
     "fertilizers, composting, pests, gardening or raising animals, and "
-    "I'll answer from my farming documents."
+    "I'll do my best to help."
 )
 
 THANKS_ANSWER = "You're welcome! Let me know if you have another farming question."
@@ -364,12 +364,14 @@ def find_context(search_question):
 
 
 def format_context(context):
+    # No numbers or "excerpt" labels: the model would copy them into the
+    # answer ("According to [Excerpt 5], ..."). Each block only says
+    # which crop or animal and which topic it is about.
     blocks = []
 
-    for number, item in enumerate(context, start=1):
+    for item in context:
         blocks.append(
-            f"[Excerpt {number}] Document: {item['document']} | "
-            f"Subject: {item['subject']} | Section: {item['section']}\n"
+            f"--- About: {item['subject']} ({item['document']}), {item['section']} ---\n"
             f"{item['text']}"
         )
 
@@ -388,37 +390,48 @@ def list_sources(context):
 # Step 3: Build the prompt and stream the answer
 # ---------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are Farmora, an agricultural information assistant for farmers, students and gardeners.
+SYSTEM_PROMPT = """You are Farmora, a friendly and experienced agricultural extension worker. You talk with farmers, students and gardeners the way a knowledgeable person talks with someone who came to ask for advice.
 
-You answer ONLY from the DOCUMENT EXCERPTS given with each question. They come from Department of Agriculture and Agricultural Training Institute extension materials.
+With each question you get your FARMING KNOWLEDGE on the topic. Treat it as what you personally know. It is ALL you know: answer only from it.
 
-GROUNDING RULES (most important)
-1. Every fact, number, rate, dose, timing, measurement, name and step in your answer must come from the excerpts. Copy quantities and units exactly as written.
-2. Do not use your own knowledge, assumptions or general farming advice to add details, even if you think they are true. If the excerpts don't say it, don't write it.
-3. Pay attention to which document and crop each excerpt is about. If the user asks about one crop and an excerpt is about a different crop, do not present it as advice for the user's crop. You may mention it only if you clearly say which crop it is for.
-4. Earlier Farmora answers in the conversation are not a source of facts. Use the conversation only to understand what the user is asking.
+WHAT YOU MAY SAY (most important)
+1. Every fact, number, rate, dose, timing, measurement, name and step in your answer must come from your FARMING KNOWLEDGE. Copy quantities and units exactly.
+2. Do not add anything from anywhere else, even if you think it is true. If your FARMING KNOWLEDGE doesn't say it, don't say it.
+3. Each part of your FARMING KNOWLEDGE says which crop or animal it is about. If the user asks about one crop and a part is about another, don't present it as advice for the user's crop. Mention it only if you clearly say which crop it is for.
+4. Your earlier answers in the conversation are not facts. Use the conversation only to understand what the user means.
 5. Never invent statistics, recommendations, procedures, chemical names, fertilizer rates or pesticide doses.
 
-WHEN THE EXCERPTS ARE NOT ENOUGH
-- If the excerpts fully answer the question, give a complete answer.
-- If they answer only part of it, answer that part fully. Do not guess those parts. Do not add a separate section explaining what the documents do not cover.
-IMPORTANT:
-- If the excerpts do not answer the question at all, or the question is not about agriculture, reply with exactly this sentence and nothing else:
+HOW YOU SOUND
+- Talk like a person, not like a search tool. Speak directly to the user ("you", "your farm").
+- NEVER mention or hint at where your knowledge comes from. Never use the words "excerpt", "document", "source", "text", "context", "notes", "reference", "material", "the information provided" or "the information given".
+- Never write "according to ...", "based on ...", "the ... states", "as mentioned in ..." or similar.
+- Never talk about the question itself. Don't write "The question asks...", "You are asking about..." or "To answer your question...". Just answer.
+- Never describe what you were or weren't given. Don't write things like "there is no information about layers here".
+- Don't introduce yourself or say you are happy to help.
+
+WHEN YOU KNOW ONLY PART OF THE ANSWER
+- Answer the part you know fully. For the rest, say it plainly in the first person, the way a person would, for example: "I don't have details on feeding layers, though." Don't guess.
+
+WHEN YOU CAN'T ANSWER
+- If your FARMING KNOWLEDGE doesn't answer the question at all, or the question isn't about agriculture, reply with exactly this sentence and nothing else:
 I'm sorry, but I do not have sufficient information to answer your question.
 
 HOW TO WRITE THE ANSWER
-- Be thorough. Include every relevant detail the excerpts give: explanations, reasons, quantities, timings, examples, varieties, materials, precautions and warnings. Do not shorten the answer or leave out useful information that is in the excerpts.
-- Explain concepts: say what something is, why it matters and how it works, as far as the excerpts explain it. Don't stop at a one-line definition.
+- Be thorough. Include every relevant detail you know: explanations, reasons, quantities, timings, examples, varieties, materials, precautions and warnings. Don't shorten the answer or leave out anything useful.
+- Explain concepts: what something is, why it matters and how it works. Don't stop at a one-line definition.
 - Answer every part of the question.
-- Start with a short overview (1-3 sentences) that directly answers the question. When you cannot answer the question, explicitly state that you do not have enough information for it.
- Do not say that the answer is not provided in the excerpts.
-- Then organise the answer with Markdown headings (###) for each main part.
-- Use numbered lists for steps and procedures. Give all the steps in the right order, with their quantities and timings.
+- Begin with 1-3 plain sentences that directly answer the question. No heading before them, and never a heading called "Overview" or "Introduction".
+- Then organise the rest with Markdown headings (###) for each main part.
+- Use numbered lists for steps and procedures, in order, with their quantities and timings.
 - Use bullet points for benefits, types, materials, symptoms or tips. Start each bullet with a **bold label** followed by an explanation.
-- Put warnings and precautions in their own "### Precautions" section when the excerpts give any.
-- You may name a source document when it helps, e.g. "The *Tomato Production Guide* recommends...". Do not mention excerpt numbers.
-- Write clearly and simply. Don't introduce yourself or say you are happy to help.
-- The excerpts were copied from PDF leaflets, so some text may be jumbled. Use only what is clear; don't guess what jumbled text means."""
+- Put warnings in a "### Precautions" section when you know any.
+- Write clearly, simply and warmly.
+- Some of your FARMING KNOWLEDGE was copied from leaflets and may be jumbled. Use only what is clear; don't guess what jumbled text means.
+
+EXAMPLE
+Question: What should I feed growing chickens?
+Bad: "Overview: The question asks about feeding growers. According to [Excerpt 5], the recommended ration is..."
+Good: "Growing chickens need a ration that changes as they get older. Here's how to feed them:" followed by the details."""
 
 
 def build_messages(question, search_question, history, context):
@@ -428,7 +441,7 @@ def build_messages(question, search_question, history, context):
 
     recent_history = history[-HISTORY_FOR_ANSWER:]
 
-    user_message = f"""DOCUMENT EXCERPTS:
+    user_message = f"""FARMING KNOWLEDGE (private: everything you know about this topic):
 
 {format_context(context)}
 
@@ -438,9 +451,129 @@ CONVERSATION SO FAR (only to understand the question, not a source of facts):
 QUESTION:
 {question}{standalone}
 
-Write a complete, well-organised answer using only the DOCUMENT EXCERPTS above."""
+Answer the user directly and naturally, using only your FARMING KNOWLEDGE. Don't mention where your knowledge comes from."""
 
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_message)]
+
+
+# ---------------------------------------------------------------
+# Keeping the answer natural
+# The prompt tells the model never to mention where its knowledge comes
+# from, but a small model sometimes still writes "According to
+# [Excerpt 5], ..." or "The question asks ...". These patterns remove
+# that before the user sees it.
+# ---------------------------------------------------------------
+
+SOURCE_WORDS = (
+    r"(?:provided |given |available |above )?"
+    r"(?:excerpts?|documents?|sources?|context|notes|reference notes|"
+    r"farming knowledge|information|text|materials?|data)"
+    r"(?:\s+(?:provided|given|above|available))?"
+)
+
+# "According to [Excerpt 5], the ration ..." -> "The ration ..."
+LEAK_PREFIX = re.compile(
+    r"^(\s*)(?:according to|as (?:stated|mentioned|described|shown|noted|seen) in|"
+    r"based on|as per|per|from|in)\s+(?:the\s+|these\s+|my\s+)?"
+    r"(?:\[\s*excerpts?\s*\d+[^\]]*\]|excerpts?\s*\d+(?:\s*(?:,|and|&)\s*\d+)*|" + SOURCE_WORDS + r")"
+    r"\s*[,:]\s*",
+    re.IGNORECASE
+)
+
+# "... is 2 kg [Excerpt 3]." or "(see Excerpt 2 and 4)" or ", as stated in excerpt 4"
+LEAK_CITATION = re.compile(
+    r"\s*[\(\[]\s*(?:see\s+)?excerpts?\s*\d+(?:\s*(?:,|and|&|-|–)\s*\d+)*\s*[\)\]]"
+    r"|\s*,?\s*\b(?:according to|as (?:stated|mentioned) in|in|from|see)\s+(?:the\s+)?"
+    r"excerpts?\s*\d+(?:\s*(?:,|and|&)\s*\d+)*\b",
+    re.IGNORECASE
+)
+
+# Whole sentences about the source material or about the question
+LEAK_SENTENCE = re.compile(
+    r"\bexcerpts?\b"
+    r"|^\s*(?:the|your|this) (?:user'?s? )?question (?:asks|is asking|is about|wants)"
+    r"|^\s*you(?:'re| are) asking"
+    r"|\b(?:the|these|this|my) " + SOURCE_WORDS +
+    r" (?:does|do|did|doesn't|don't|provides?|mentions?|states?|says?|contains?|includes?|covers?|gives?|shows?)\b",
+    re.IGNORECASE
+)
+
+# "### Overview" or "**Overview:**" labels
+OVERVIEW_LINE = re.compile(r"^\s*(?:#{1,6}\s*)?\**\s*(?:overview|introduction)\s*\**:?\s*\**\s*$", re.IGNORECASE)
+OVERVIEW_LABEL = re.compile(r"^(\s*)(?:#{1,6}\s*)?\**\s*(?:overview|introduction)\s*:\s*\**\s*", re.IGNORECASE)
+
+# Where a finished sentence or line ends
+SENTENCE_END = re.compile(r"\n|[.!?](?=\s)")
+
+
+def capitalize_first(text):
+    for index, character in enumerate(text):
+        if character.isalpha():
+            return text[:index] + character.upper() + text[index + 1:]
+        if not character.isspace() and character not in "*_":
+            return text
+    return text
+
+
+def clean_sentence(sentence):
+    cleaned = LEAK_PREFIX.sub(r"\1", sentence)
+    if cleaned != sentence:
+        cleaned = capitalize_first(cleaned)
+
+    cleaned = LEAK_CITATION.sub("", cleaned)
+
+    if LEAK_SENTENCE.search(cleaned):
+        return ""
+    return cleaned
+
+
+def clean_text(text):
+    lines = []
+
+    for line in text.split("\n"):
+        if OVERVIEW_LINE.match(line):
+            continue
+
+        line = OVERVIEW_LABEL.sub(r"\1", line)
+
+        # Split into sentences, keeping the spaces between them
+        parts = re.split(r"(?<=[.!?])(\s+)", line)
+        kept = ""
+        for index in range(0, len(parts), 2):
+            sentence = clean_sentence(parts[index])
+            space = parts[index + 1] if index + 1 < len(parts) else ""
+            if sentence.strip() != "":
+                kept = kept + sentence + space
+            elif parts[index].strip() == "":
+                kept = kept + parts[index] + space
+
+        lines.append(kept)
+
+    return "\n".join(lines)
+
+
+class AnswerCleaner:
+    # Streams the answer one finished sentence at a time, cleaned.
+    # The unfinished sentence is held back until it ends.
+
+    def __init__(self):
+        self.pending = ""
+
+    def add(self, text):
+        self.pending = self.pending + text
+
+        ends = [match.end() for match in SENTENCE_END.finditer(self.pending)]
+        if len(ends) == 0:
+            return ""
+
+        ready = self.pending[:ends[-1]]
+        self.pending = self.pending[ends[-1]:]
+        return clean_text(ready)
+
+    def finish(self):
+        ready = self.pending
+        self.pending = ""
+        return clean_text(ready)
 
 
 def numbers_not_in_context(answer, context):
@@ -496,11 +629,19 @@ def generate_response_stream(question, history):
     messages = build_messages(question, search_question, history, context)
 
     answer = ""
+    cleaner = AnswerCleaner()
 
     for chunk in answer_llm.stream(messages):
         if chunk.content:
-            answer = answer + chunk.content
-            yield chunk.content
+            text = cleaner.add(chunk.content)
+            if text:
+                answer = answer + text
+                yield text
+
+    text = cleaner.finish()
+    if text:
+        answer = answer + text
+        yield text
 
     sources = [] if is_refusal(answer) else list_sources(context)
 
@@ -510,7 +651,7 @@ def generate_response_stream(question, history):
 
     missing = numbers_not_in_context(answer, context)
     if missing and not is_refusal(answer):
-        print("[Farmora] Check these numbers, they are not in the excerpts:", ", ".join(missing))
+        print("[Farmora] Check these numbers, they are not in the retrieved sections:", ", ".join(missing))
     print()
 
     yield SOURCES_MARKER + json.dumps(sources)
