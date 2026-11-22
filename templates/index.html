@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Farmora</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+    <style type="text/tailwindcss">
+        @font-face {
+            font-family: 'poppins';
+            src: url("{{ url_for('static', filename='fonts/poppins.regular.ttf') }}");
+        }
+
+        @theme {
+            --color-nudeGray: #f6f6f6;
+            --color-greenSolid: #00bf41;
+            --color-darkGreen: #00521c;
+            --font-poppins: 'poppins';
+            --shadow-greenFade: 10px 0px 100px 20px rgba(0, 191, 65, 0.25);
+        }
+    </style>
+
+    <style>
+        /* Formatting for answers rendered from Markdown */
+        .markdown-content ul { list-style-type: disc; padding-left: 1.5rem; margin: 0.75rem 0; }
+        .markdown-content ol { list-style-type: decimal; padding-left: 1.5rem; margin: 0.75rem 0; }
+        .markdown-content li { margin-bottom: 0.5rem; }
+        .markdown-content p { margin-bottom: 0.75rem; }
+        .markdown-content p:last-child { margin-bottom: 0; }
+        .markdown-content strong { font-weight: 700; }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3 { font-weight: 700; margin: 1rem 0 0.5rem; }
+        .markdown-content code { background: #eef2ef; padding: 0.1rem 0.3rem; border-radius: 0.3rem; }
+
+        /* Blinking cursor while Farmora is typing */
+        .typing-cursor::after {
+            content: "\258D";
+            margin-left: 2px;
+            color: #00bf41;
+            animation: blink 1s steps(2, start) infinite;
+        }
+        @keyframes blink { to { visibility: hidden; } }
+
+        /* "Thinking" dots */
+        .thinking span {
+            display: inline-block; width: 8px; height: 8px; margin-right: 4px;
+            border-radius: 50%; background: #00bf41; animation: bounce 1.2s infinite ease-in-out;
+        }
+        .thinking span:nth-child(2) { animation-delay: 0.15s; }
+        .thinking span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
+
+        /* Message buttons appear on hover (always visible on touch screens) */
+        .message-actions { opacity: 0; transition: opacity 0.15s; }
+        .message:hover .message-actions, .message:focus-within .message-actions,
+        .message.is-last .message-actions { opacity: 1; }
+        @media (hover: none) { .message-actions { opacity: 1; } }
+
+        .chat-item .chat-actions { opacity: 0; }
+        .chat-item:hover .chat-actions, .chat-item.active .chat-actions,
+        .chat-item:focus-within .chat-actions { opacity: 1; }
+        @media (hover: none) { .chat-item .chat-actions { opacity: 1; } }
+    </style>
+</head>
+
+<body class="bg-nudeGray h-dvh flex overflow-hidden font-poppins text-gray-800">
+
+    <!-- ========== SIDEBAR ========== -->
+    <div id="sidebar-backdrop" class="fixed inset-0 bg-black/30 z-20 hidden md:hidden"></div>
+
+    <aside id="sidebar"
+           class="fixed md:static inset-y-0 left-0 z-30 w-72 shrink-0 bg-white border-r border-gray-200
+                  flex flex-col -translate-x-full md:translate-x-0 transition-transform duration-200">
+
+        <div class="p-4 flex items-center justify-between">
+            <span class="text-xl font-semibold text-darkGreen">Farmora</span>
+            <button id="close-sidebar" class="md:hidden p-2 rounded-lg hover:bg-gray-100" title="Close sidebar">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <div class="px-4">
+            <button id="new-chat-btn"
+                    class="w-full flex items-center justify-center gap-2 py-3 rounded-2xl bg-greenSolid text-white hover:bg-darkGreen transition-colors">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+                New chat
+            </button>
+        </div>
+
+        <div class="px-4 pt-5 pb-2 text-xs uppercase tracking-wide text-gray-400">Chats</div>
+
+        <nav id="chat-list" class="flex-1 overflow-y-auto px-2 pb-2 space-y-1">
+            <!-- Filled by script.js -->
+        </nav>
+
+        <div class="p-4 border-t border-gray-100">
+            <button id="clear-all-btn"
+                    class="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-sm text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                Delete all chats
+            </button>
+        </div>
+    </aside>
+
+    <!-- ========== MAIN AREA ========== -->
+    <main class="flex-1 min-w-0 flex flex-col">
+
+        <nav class="shrink-0 m-4 mb-2 p-5 rounded-[1.5rem] flex items-center gap-3
+                    bg-[linear-gradient(128deg,rgba(0,191,65,1)_0%,rgba(13,250,0,1)_24%,rgba(239,239,239,1)_49%,rgba(13,250,0,1)_76%,rgba(0,191,65,1)_100%)]">
+            <button id="open-sidebar" class="md:hidden p-2 rounded-lg bg-white/30 text-white" title="Open sidebar">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+            </button>
+            <h1 class="text-white text-[1.75rem] leading-none">Farmora</h1>
+            <span id="chat-title" class="ml-auto truncate max-w-[50%] text-sm text-darkGreen/80 bg-white/60 px-3 py-1 rounded-full hidden"></span>
+        </nav>
+
+        <!-- Messages -->
+        <div id="chat-container" class="flex-1 min-h-0 overflow-y-auto px-2 md:px-6 pb-4">
+            <div id="messages" class="max-w-3xl mx-auto"></div>
+
+            <!-- Welcome screen with starter questions -->
+            <div id="empty-state" class="max-w-3xl mx-auto h-full flex flex-col items-center justify-center text-center px-6">
+                <h2 class="text-3xl font-semibold text-darkGreen">Welcome to Farmora!</h2>
+                <p class="text-gray-500 mt-3 max-w-md">
+                    Your Agriculture and Farming Guide. Ask me anything about crops,
+                    soil management, fertilizers, pests, and sustainable farming.
+                </p>
+                <div id="starter-suggestions" class="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl"></div>
+            </div>
+
+            <!-- Follow-up suggestions after an answer -->
+            <div id="follow-ups" class="max-w-3xl mx-auto px-4 mt-2 flex flex-wrap gap-2"></div>
+        </div>
+
+        <!-- Input -->
+        <div class="shrink-0 w-full max-w-3xl mx-auto">
+            <form id="chat-form">
+                <div class="relative p-[3px] rounded-[1.5rem] focus-within:bg-[linear-gradient(90deg,rgba(0,191,65,1)_0%,rgba(237,136,2,1)_100%)] shadow-greenFade m-4 mt-2">
+                    <textarea id="user-input" rows="1" placeholder="Ask your farming question"
+                              class="block w-full min-h-[4.5rem] max-h-[10rem] rounded-[calc(1.5rem-2px)] pl-6 pr-20 py-6
+                                     outline-none border-none bg-nudeGray resize-none overflow-y-auto"></textarea>
+
+                    <!-- Send button (turns into a Stop button while Farmora answers) -->
+                    <button type="submit" id="send-btn" title="Send"
+                            class="absolute bottom-4 right-4 w-11 h-11 flex items-center justify-center rounded-full
+                                   bg-greenSolid text-white hover:bg-darkGreen transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        <svg id="send-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                        <svg id="stop-icon" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+                    </button>
+                </div>
+            </form>
+            <p class="text-center text-xs text-gray-400 -mt-2 mb-3 px-4">
+                Farmora answers from its farming documents and can make mistakes. Check important advice with an expert.
+            </p>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated data
+vector_db/
+farmora.db
+
+# Editors
+.idea/
+.vscode/
