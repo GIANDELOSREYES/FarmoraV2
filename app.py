@@ -4,14 +4,16 @@
 # Run:   python app.py
 # Open:  http://127.0.0.1:5050
 
+import json
+
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 import database as db
 from retrieve import (
-    FALLBACK_ANSWER,
-    REPLACE_MARKER,
+    SOURCES_MARKER,
     generate_response_stream,
     get_starter_questions,
+    is_refusal,
     suggest_follow_ups
 )
 
@@ -19,6 +21,12 @@ app = Flask(__name__)
 
 HISTORY_LIMIT = 10   # how many earlier messages the model sees
 TITLE_LENGTH = 40    # longest automatic chat title
+
+ERROR_MESSAGE = "Sorry, something went wrong. Please try again."
+OLLAMA_MESSAGE = (
+    "Sorry, Farmora can't reach its language model right now. "
+    "Please make sure Ollama is running, then try again."
+)
 
 db.init_db()
 
@@ -61,18 +69,30 @@ def remove_empty_bullet(answer):
     return "\n".join(lines).strip()
 
 
+def error_text(problem):
+    # A friendlier message when Ollama isn't running
+    text = (type(problem).__name__ + " " + str(problem)).lower()
+
+    if "connect" in text or "refused" in text or "ollama" in text:
+        return OLLAMA_MESSAGE
+    return ERROR_MESSAGE
+
+
 def stream_answer(chat_id, question, history):
     # Sends the answer to the browser piece by piece, then saves it.
+    # The last piece is SOURCES_MARKER + the documents used; the
+    # browser shows those under the answer.
 
     def generate():
         answer = ""
+        sources = []
         finished = False
 
         try:
             for chunk in generate_response_stream(question, history):
 
-                if chunk.startswith(REPLACE_MARKER):
-                    answer = chunk.replace(REPLACE_MARKER, "")
+                if chunk.startswith(SOURCES_MARKER):
+                    sources = json.loads(chunk[len(SOURCES_MARKER):])
                 else:
                     answer = answer + chunk
 
@@ -81,9 +101,14 @@ def stream_answer(chat_id, question, history):
             finished = True
 
         except Exception as problem:
-            print("\n[Farmora] Error while answering:", problem, "\n")
-            message = "\n\nSorry, something went wrong. Please try again."
+            print("\n[Farmora] Error while answering:", repr(problem), "\n")
+            message = error_text(problem)
+
+            if answer.strip() != "":
+                message = "\n\n" + message
+
             answer = answer + message
+            sources = []
             finished = True
             yield message
 
@@ -99,7 +124,7 @@ def stream_answer(chat_id, question, history):
                 print("\n[Farmora] Answer stopped by the user.\n")
 
             if answer != "":
-                db.add_message(chat_id, "assistant", answer, stopped)
+                db.add_message(chat_id, "assistant", answer, stopped, sources)
 
             db.touch_chat(chat_id)
 
@@ -234,10 +259,18 @@ def edit_message(chat_id, message_id):
     if new_text == "":
         return error("Content is required.", 400)
 
-    # Save the new question and delete everything after it.
+    # Save the new question and delete everything after it: the old
+    # answers replied to the old question, so they are no longer valid.
     # The browser then calls /regenerate to get a new answer.
     db.update_message(chat_id, message_id, new_text)
     db.delete_messages_after(chat_id, message_id)
+
+    # If the first question was edited, update the automatic title too
+    chat = db.get_chat(chat_id)
+    first_message = db.get_messages(chat_id)[0]
+
+    if first_message["id"] == message_id and chat["title"] == make_title(message["content"]):
+        db.rename_chat(chat_id, make_title(new_text))
 
     return jsonify(db.get_message(chat_id, message_id))
 
@@ -262,16 +295,17 @@ def follow_up_suggestions(chat_id):
     question = messages[-2]["content"]
     answer = messages[-1]["content"]
 
-    # No suggestions after a stopped answer, a refusal or an error
-    if messages[-1]["stopped"] == 1:
+    # No suggestions after a stopped answer, a refusal, an error or
+    # small talk (answers without sources)
+    if messages[-1]["stopped"] == 1 or is_refusal(answer):
         return jsonify({"suggestions": []})
-    if answer.startswith("I'm sorry") or answer == FALLBACK_ANSWER:
+    if answer.endswith(ERROR_MESSAGE) or answer.endswith(OLLAMA_MESSAGE):
         return jsonify({"suggestions": []})
-    if "something went wrong" in answer:
+    if len(messages[-1]["sources"]) == 0:
         return jsonify({"suggestions": []})
 
     try:
-        suggestions = suggest_follow_ups(question, answer)
+        suggestions = suggest_follow_ups(question, answer, messages[-1]["sources"])
     except Exception as problem:
         print("\n[Farmora] Could not create follow-ups:", problem, "\n")
         suggestions = []

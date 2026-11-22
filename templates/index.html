@@ -29,8 +29,18 @@
         .markdown-content p { margin-bottom: 0.75rem; }
         .markdown-content p:last-child { margin-bottom: 0; }
         .markdown-content strong { font-weight: 700; }
-        .markdown-content h1, .markdown-content h2, .markdown-content h3 { font-weight: 700; margin: 1rem 0 0.5rem; }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 { font-weight: 700; margin: 1.25rem 0 0.5rem; color: #00521c; }
+        .markdown-content h1 { font-size: 1.35rem; }
+        .markdown-content h2 { font-size: 1.2rem; }
+        .markdown-content h3 { font-size: 1.08rem; }
+        .markdown-content h4 { font-size: 1rem; }
+        .markdown-content > :first-child { margin-top: 0; }
+        .markdown-content li > ul, .markdown-content li > ol { margin: 0.4rem 0; }
         .markdown-content code { background: #eef2ef; padding: 0.1rem 0.3rem; border-radius: 0.3rem; }
+        .markdown-content blockquote { border-left: 3px solid #00bf41; padding-left: 0.9rem; color: #4b5563; margin: 0.75rem 0; }
+        .markdown-content table { border-collapse: collapse; margin: 0.75rem 0; display: block; overflow-x: auto; max-width: 100%; }
+        .markdown-content th, .markdown-content td { border: 1px solid #e5e7eb; padding: 0.4rem 0.7rem; text-align: left; }
+        .markdown-content th { background: #f0fdf4; }
 
         /* Blinking cursor while Farmora is typing */
         .typing-cursor::after {
@@ -60,6 +70,21 @@
         .chat-item:hover .chat-actions, .chat-item.active .chat-actions,
         .chat-item:focus-within .chat-actions { opacity: 1; }
         @media (hover: none) { .chat-item .chat-actions { opacity: 1; } }
+
+        /* Editing a question */
+        .edit-box { animation: pop-in 0.15s ease-out; }
+
+        /* Confirmation dialog and notices */
+        #dialog .dialog-backdrop { opacity: 0; transition: opacity 0.15s; }
+        #dialog .dialog-panel { opacity: 0; transform: scale(0.96) translateY(6px); transition: opacity 0.15s, transform 0.15s; }
+        #dialog.open .dialog-backdrop { opacity: 1; }
+        #dialog.open .dialog-panel { opacity: 1; transform: none; }
+        #toast { transition: opacity 0.2s, transform 0.2s; }
+        #toast.hidden-toast { opacity: 0; transform: translate(-50%, 10px); pointer-events: none; }
+        @keyframes pop-in { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: none; } }
+        @media (prefers-reduced-motion: reduce) {
+            .edit-box, #dialog .dialog-backdrop, #dialog .dialog-panel, #toast { animation: none; transition: none; }
+        }
     </style>
 </head>
 
@@ -111,7 +136,14 @@
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
             </button>
             <h1 class="text-white text-[1.75rem] leading-none">Farmora</h1>
-            <span id="chat-title" class="ml-auto truncate max-w-[50%] text-sm text-darkGreen/80 bg-white/60 px-3 py-1 rounded-full hidden"></span>
+            <div class="ml-auto min-w-0 max-w-[60%] flex items-center gap-2">
+                <span id="chat-title" class="truncate text-sm text-darkGreen/80 bg-white/60 px-3 py-1 rounded-full hidden"></span>
+                <!-- Delete the open conversation -->
+                <button id="delete-chat-btn" title="Delete this conversation" aria-label="Delete this conversation"
+                        class="hidden shrink-0 p-2 rounded-full bg-white/60 text-darkGreen/80 hover:bg-white hover:text-red-600 transition-colors">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                </button>
+            </div>
         </nav>
 
         <!-- Messages -->
@@ -155,8 +187,30 @@
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <!-- ========== DIALOG (confirm delete, rename) ========== -->
+    <div id="dialog" class="fixed inset-0 z-50 hidden items-center justify-center p-4">
+        <div class="dialog-backdrop absolute inset-0 bg-black/40" data-dialog="cancel"></div>
+        <div class="dialog-panel relative w-full max-w-sm bg-white rounded-[1.5rem] shadow-xl p-6"
+             role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-message">
+            <h3 id="dialog-title" class="text-lg font-semibold text-darkGreen"></h3>
+            <p id="dialog-message" class="mt-2 text-sm text-gray-600 leading-relaxed"></p>
+            <input id="dialog-input" type="text" maxlength="100"
+                   class="hidden mt-4 w-full px-4 py-2.5 rounded-xl bg-nudeGray border border-gray-200 outline-none focus:border-greenSolid transition-colors">
+            <div class="mt-6 flex justify-end gap-2">
+                <button id="dialog-cancel" data-dialog="cancel"
+                        class="px-4 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-100 transition-colors">Cancel</button>
+                <button id="dialog-confirm"
+                        class="px-4 py-2 rounded-xl text-sm text-white bg-greenSolid hover:bg-darkGreen transition-colors">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Short notices, e.g. when something could not be saved -->
+    <div id="toast" role="status" aria-live="polite"
+         class="hidden-toast fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] px-4 py-2.5 rounded-xl bg-darkGreen text-white text-sm shadow-lg"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

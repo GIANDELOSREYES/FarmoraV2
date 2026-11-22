@@ -4,12 +4,13 @@
 // Sections:
 //   1. Page elements and variables
 //   2. Helper functions
-//   3. Sidebar: list, open, rename and delete chats
-//   4. Showing messages
-//   5. Sending questions and streaming answers
-//   6. Message buttons: copy, edit, regenerate
-//   7. Suggested questions
-//   8. Button clicks and start-up
+//   3. Dialog and notices
+//   4. Sidebar: list, open, rename and delete chats
+//   5. Showing messages
+//   6. Sending questions and streaming answers
+//   7. Message buttons: copy, edit, regenerate
+//   8. Suggested questions
+//   9. Button clicks and start-up
 
 
 // =================================================================
@@ -22,6 +23,7 @@ const chatList = document.getElementById("chat-list");
 const newChatBtn = document.getElementById("new-chat-btn");
 const clearAllBtn = document.getElementById("clear-all-btn");
 const chatTitle = document.getElementById("chat-title");
+const deleteChatBtn = document.getElementById("delete-chat-btn");
 const chatContainer = document.getElementById("chat-container");
 const messagesBox = document.getElementById("messages");
 const emptyState = document.getElementById("empty-state");
@@ -32,15 +34,23 @@ const userInput = document.getElementById("user-input");
 const sendBtn = document.getElementById("send-btn");
 const sendIcon = document.getElementById("send-icon");
 const stopIcon = document.getElementById("stop-icon");
+const dialog = document.getElementById("dialog");
+const dialogTitle = document.getElementById("dialog-title");
+const dialogMessage = document.getElementById("dialog-message");
+const dialogInput = document.getElementById("dialog-input");
+const dialogConfirm = document.getElementById("dialog-confirm");
+const toast = document.getElementById("toast");
 
-// Must be the same as REPLACE_MARKER in retrieve.py
-const REPLACE_MARKER = "[[FARMORA_REPLACE]]";
+// Must be the same as SOURCES_MARKER in retrieve.py. The server sends it
+// after the answer, followed by the list of documents used.
+const SOURCES_MARKER = "[[FARMORA_SOURCES]]";
 
 let chats = [];              // all chats shown in the sidebar
 let currentChatId = null;    // the open chat (null means a new, unsaved chat)
 let currentMessages = [];    // the messages of the open chat
 let isAnswering = false;     // true while Farmora is writing an answer
 let stopController = null;   // used to stop an answer
+let editingIndex = null;     // the question being edited (null if none)
 
 // Small icons (SVG) used on the buttons
 const COPY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
@@ -57,10 +67,10 @@ const BUTTON_STYLE = "p-1.5 rounded-lg text-gray-400 hover:text-darkGreen hover:
 // 2. Helper functions
 // =================================================================
 
-// Ask the server for data (GET)
+// Ask the server for data (GET). Throws an error if the request fails.
 async function getData(url) {
     const response = await fetch(url);
-    return await response.json();
+    return await readResponse(response);
 }
 
 // Send data to the server (POST, PATCH or DELETE)
@@ -70,7 +80,23 @@ async function sendData(url, method, data) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data || {})
     });
-    return await response.json();
+    return await readResponse(response);
+}
+
+async function readResponse(response) {
+    let data = {};
+    try {
+        data = await response.json();
+    } catch (error) {
+        // The server sent no JSON
+    }
+
+    if (!response.ok) {
+        const error = new Error(data.error || "The server returned an error.");
+        error.status = response.status;
+        throw error;
+    }
+    return data;
 }
 
 // Make text safe to put inside HTML (stops "<" from becoming a tag)
@@ -108,11 +134,114 @@ function getRememberedChat() {
 
 
 // =================================================================
-// 3. Sidebar: list, open, rename and delete chats
+// 3. Dialog and notices
+// =================================================================
+
+// Shows the dialog and waits for the user's choice.
+// Returns true (or the typed text, if there is an input box) when the
+// user confirms, and null when they cancel.
+let closeDialog = null;
+
+function showDialog({ title, message, confirmText = "OK", danger = false, inputValue = null }) {
+    return new Promise((resolve) => {
+        const opener = document.activeElement;
+
+        dialogTitle.textContent = title;
+        dialogMessage.textContent = message || "";
+        dialogMessage.classList.toggle("hidden", !message);
+        dialogConfirm.textContent = confirmText;
+
+        // Red button for deleting, green for everything else
+        dialogConfirm.classList.toggle("bg-red-600", danger);
+        dialogConfirm.classList.toggle("hover:bg-red-700", danger);
+        dialogConfirm.classList.toggle("bg-greenSolid", !danger);
+        dialogConfirm.classList.toggle("hover:bg-darkGreen", !danger);
+
+        const hasInput = inputValue !== null;
+        dialogInput.classList.toggle("hidden", !hasInput);
+        dialogInput.value = hasInput ? inputValue : "";
+
+        dialog.classList.remove("hidden");
+        dialog.classList.add("flex");
+        requestAnimationFrame(() => dialog.classList.add("open"));
+
+        if (hasInput) {
+            dialogInput.focus();
+            dialogInput.select();
+        } else {
+            dialogConfirm.focus();
+        }
+
+        closeDialog = (confirmed) => {
+            closeDialog = null;
+            dialog.classList.remove("open", "flex");
+            dialog.classList.add("hidden");
+            if (opener && opener.focus) opener.focus();
+
+            if (!confirmed) {
+                resolve(null);
+            } else if (hasInput) {
+                const text = dialogInput.value.trim();
+                resolve(text === "" ? null : text);
+            } else {
+                resolve(true);
+            }
+        };
+    });
+}
+
+dialogConfirm.addEventListener("click", () => closeDialog && closeDialog(true));
+
+dialog.addEventListener("click", (event) => {
+    if (event.target.closest("[data-dialog='cancel']") && closeDialog) closeDialog(false);
+});
+
+document.addEventListener("keydown", (event) => {
+    if (!closeDialog) return;
+
+    if (event.key === "Escape") {
+        event.preventDefault();
+        closeDialog(false);
+    } else if (event.key === "Enter" && document.activeElement === dialogInput) {
+        event.preventDefault();
+        closeDialog(true);
+    } else if (event.key === "Tab") {
+        // Keep the keyboard focus inside the dialog
+        const items = [...dialog.querySelectorAll("button, input:not(.hidden)")];
+        const first = items[0];
+        const last = items[items.length - 1];
+
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+});
+
+// A short message at the bottom of the screen
+let toastTimer = null;
+
+function showToast(message) {
+    toast.textContent = message;
+    toast.classList.remove("hidden-toast");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.add("hidden-toast"), 3500);
+}
+
+
+// =================================================================
+// 4. Sidebar: list, open, rename and delete chats
 // =================================================================
 
 async function loadChats() {
-    chats = await getData("/api/chats");
+    try {
+        chats = await getData("/api/chats");
+    } catch (error) {
+        showToast("Couldn't load your chats. Is the Farmora server running?");
+    }
     showChatList();
     showChatTitle();
 }
@@ -151,9 +280,12 @@ function showChatTitle() {
 
     if (chat) {
         chatTitle.textContent = chat.title;
+        chatTitle.title = chat.title;
         chatTitle.classList.remove("hidden");
+        deleteChatBtn.classList.remove("hidden");
     } else {
         chatTitle.classList.add("hidden");
+        deleteChatBtn.classList.add("hidden");
     }
 }
 
@@ -162,6 +294,7 @@ function startNewChat() {
 
     currentChatId = null;
     currentMessages = [];
+    editingIndex = null;
     rememberChat(null);
 
     showMessages();
@@ -174,15 +307,20 @@ function startNewChat() {
 async function openChat(chatId) {
     if (isAnswering) return;
 
-    const chat = await getData(`/api/chats/${chatId}`);
-
-    if (chat.error) {
+    let chat;
+    try {
+        chat = await getData(`/api/chats/${chatId}`);
+    } catch (error) {
+        // The chat was deleted (404), or the server can't be reached
+        if (error.status !== 404) showToast("Couldn't open that chat. Please try again.");
         startNewChat();
+        await loadChats();
         return;
     }
 
     currentChatId = chat.id;
     currentMessages = chat.messages;
+    editingIndex = null;
     rememberChat(chat.id);
 
     showMessages();
@@ -193,37 +331,84 @@ async function openChat(chatId) {
 
 async function renameChat(chatId) {
     const chat = chats.find((item) => item.id === chatId);
-    const newTitle = prompt("Rename chat:", chat.title);
+    if (!chat) return;
 
-    // prompt() returns null if the user clicks Cancel
-    if (newTitle === null || newTitle.trim() === "") return;
+    const newTitle = await showDialog({
+        title: "Rename chat",
+        confirmText: "Save",
+        inputValue: chat.title
+    });
 
-    await sendData(`/api/chats/${chatId}`, "PATCH", { title: newTitle });
+    // null means the user cancelled or left the name empty
+    if (newTitle === null || newTitle === chat.title) return;
+
+    try {
+        await sendData(`/api/chats/${chatId}`, "PATCH", { title: newTitle });
+    } catch (error) {
+        showToast("Couldn't rename the chat. Please try again.");
+    }
     await loadChats();
 }
 
 async function deleteChat(chatId) {
-    if (isAnswering) return;
+    if (isAnswering) {
+        showToast("Please wait for Farmora to finish answering.");
+        return;
+    }
 
     const chat = chats.find((item) => item.id === chatId);
-    if (!confirm(`Delete "${chat.title}"? This can't be undone.`)) return;
+    if (!chat) return;
 
-    await sendData(`/api/chats/${chatId}`, "DELETE");
+    const confirmed = await showDialog({
+        title: "Delete conversation?",
+        message: `"${chat.title}" and all of its messages will be permanently deleted. This can't be undone.`,
+        confirmText: "Delete",
+        danger: true
+    });
+    if (!confirmed) return;
+
+    try {
+        await sendData(`/api/chats/${chatId}`, "DELETE");
+    } catch (error) {
+        // 404 means it was already deleted, which is what we wanted
+        if (error.status !== 404) {
+            showToast("Couldn't delete the conversation. Please try again.");
+            return;
+        }
+    }
 
     if (chatId === currentChatId) {
         startNewChat();
     }
     await loadChats();
+    showToast("Conversation deleted.");
 }
 
 async function deleteAllChats() {
-    if (isAnswering || chats.length === 0) return;
-    if (!confirm("Delete all chats? This can't be undone.")) return;
+    if (isAnswering) {
+        showToast("Please wait for Farmora to finish answering.");
+        return;
+    }
+    if (chats.length === 0) return;
 
-    await sendData("/api/chats", "DELETE");
+    const confirmed = await showDialog({
+        title: "Delete all chats?",
+        message: `All ${chats.length} conversations and their messages will be permanently deleted. This can't be undone.`,
+        confirmText: "Delete all",
+        danger: true
+    });
+    if (!confirmed) return;
+
+    try {
+        await sendData("/api/chats", "DELETE");
+    } catch (error) {
+        showToast("Couldn't delete the chats. Please try again.");
+        return;
+    }
 
     startNewChat();
     await loadChats();
+    showToast("All conversations deleted.");
 }
 
 function openSidebar() {
@@ -238,7 +423,7 @@ function closeSidebar() {
 
 
 // =================================================================
-// 4. Showing messages
+// 5. Showing messages
 // =================================================================
 
 function showMessages() {
@@ -259,23 +444,63 @@ function showMessages() {
     }
 
     messagesBox.innerHTML = html;
-    scrollToBottom();
+
+    if (editingIndex === null) {
+        scrollToBottom();
+        return;
+    }
+
+    // Put the cursor at the end of the question being edited
+    const editInput = document.getElementById("edit-input");
+    resizeEditBox(editInput);
+    editInput.focus();
+    editInput.setSelectionRange(editInput.value.length, editInput.value.length);
+    editInput.closest(".message").scrollIntoView({ block: "nearest" });
 }
 
 function messageHtml(message, index, isLast) {
 
+    // While a question is being edited, the messages after it are faded:
+    // saving the edit replaces them
+    let faded = "";
+    if (editingIndex !== null && index > editingIndex) {
+        faded = "opacity-40 pointer-events-none select-none";
+    }
+
     if (message.role === "user") {
+        if (index === editingIndex) {
+            return editBoxHtml(message, index);
+        }
+
+        // A question can be edited once it is saved (has an id)
+        let editButton = "";
+        if (message.id) {
+            editButton = `<button class="${BUTTON_STYLE}" data-action="edit" data-index="${index}" title="Edit question" aria-label="Edit question">${EDIT_ICON}</button>`;
+        }
+
         return `
-            <div class="message flex flex-col items-end mt-6">
+            <div class="message flex flex-col items-end mt-6 transition-opacity ${faded}">
                 <div class="bg-white px-5 py-3 rounded-2xl max-w-[85%] whitespace-pre-wrap break-words shadow-sm">${escapeHtml(message.content)}</div>
                 <div class="message-actions flex gap-1 mt-1">
-                    <button class="${BUTTON_STYLE}" data-action="edit" data-index="${index}" title="Edit question">${EDIT_ICON}</button>
-                    <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy">${COPY_ICON}</button>
+                    ${editButton}
+                    <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy" aria-label="Copy">${COPY_ICON}</button>
                 </div>
             </div>`;
     }
 
     // Farmora's answer
+    let sourcesHtml = "";
+    if (message.sources && message.sources.length > 0) {
+        let chips = "";
+        for (const source of message.sources) {
+            chips += `<span class="px-2 py-0.5 rounded-full bg-green-50 text-darkGreen border border-greenSolid/20">${escapeHtml(source)}</span>`;
+        }
+        sourcesHtml = `
+            <div class="flex flex-wrap items-center gap-1.5 mt-3 px-2 text-xs">
+                <span class="text-gray-400">Sources:</span>${chips}
+            </div>`;
+    }
+
     let stoppedNote = "";
     if (message.stopped) {
         stoppedNote = '<p class="text-xs text-gray-400 italic mt-1 px-2">Answer stopped.</p>';
@@ -287,19 +512,48 @@ function messageHtml(message, index, isLast) {
     }
 
     return `
-        <div class="message flex flex-col items-start mt-4 ${isLast ? "is-last" : ""}">
+        <div class="message flex flex-col items-start mt-4 transition-opacity ${isLast ? "is-last" : ""} ${faded}">
             <div class="markdown-content px-2 py-1 max-w-full break-words leading-relaxed">${markdownToHtml(message.content)}</div>
+            ${sourcesHtml}
             ${stoppedNote}
             <div class="message-actions flex gap-1 mt-1">
-                <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy">${COPY_ICON}</button>
+                <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy" aria-label="Copy">${COPY_ICON}</button>
                 ${regenerateButton}
             </div>
         </div>`;
 }
 
+// The question turns into a text box with Cancel and Save buttons
+function editBoxHtml(message, index) {
+    let note = "Farmora will answer the edited question.";
+    if (index < currentMessages.length - 1) {
+        note = "Farmora will answer the edited question. The messages below will be replaced.";
+    }
+
+    return `
+        <div class="message edit-box flex flex-col items-end mt-6">
+            <div class="w-full max-w-[85%] bg-white rounded-2xl shadow-sm ring-2 ring-greenSolid/50 p-3">
+                <textarea id="edit-input" rows="1" aria-label="Edit your question"
+                          class="block w-full max-h-60 resize-none overflow-y-auto outline-none bg-transparent px-2 py-1">${escapeHtml(message.content)}</textarea>
+                <p class="text-xs text-gray-400 px-2 mt-2">${note}</p>
+                <div class="flex items-center justify-end gap-2 mt-2">
+                    <button data-action="cancel-edit"
+                            class="px-4 py-1.5 rounded-xl text-sm text-gray-600 hover:bg-gray-100 transition-colors">Cancel</button>
+                    <button data-action="save-edit"
+                            class="px-4 py-1.5 rounded-xl text-sm text-white bg-greenSolid hover:bg-darkGreen transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Save</button>
+                </div>
+            </div>
+        </div>`;
+}
+
+function resizeEditBox(box) {
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight, 240) + "px";
+}
+
 
 // =================================================================
-// 5. Sending questions and streaming answers
+// 6. Sending questions and streaming answers
 // =================================================================
 
 function setAnswering(answering) {
@@ -325,10 +579,18 @@ async function sendQuestion(question) {
 
     // A new chat is saved when its first question is sent
     if (currentChatId === null) {
-        const chat = await sendData("/api/chats", "POST");
-        currentChatId = chat.id;
-        rememberChat(chat.id);
+        try {
+            const chat = await sendData("/api/chats", "POST");
+            currentChatId = chat.id;
+            rememberChat(chat.id);
+        } catch (error) {
+            showToast("Couldn't start a new chat. Is the Farmora server running?");
+            userInput.value = question;
+            return;
+        }
     }
+
+    editingIndex = null;
 
     // Show the question right away
     currentMessages.push({ role: "user", content: question });
@@ -342,9 +604,10 @@ async function regenerateAnswer() {
 
     // Remove the old answer from the screen
     const lastMessage = currentMessages[currentMessages.length - 1];
-    if (lastMessage.role === "assistant") {
+    if (lastMessage && lastMessage.role === "assistant") {
         currentMessages.pop();
     }
+    editingIndex = null;
     showMessages();
 
     await streamAnswer(`/api/chats/${currentChatId}/regenerate`, {});
@@ -380,7 +643,8 @@ async function streamAnswer(url, data) {
         });
 
         if (!response.ok) {
-            throw new Error("The server returned an error.");
+            const problem = await readResponse(response).catch((error) => error);
+            throw problem;
         }
 
         const reader = response.body.getReader();
@@ -393,12 +657,11 @@ async function streamAnswer(url, data) {
 
             answer += decoder.decode(value, { stream: true });
 
-            // The server sends this marker to replace the whole answer
-            if (answer.includes(REPLACE_MARKER)) {
-                answer = answer.split(REPLACE_MARKER)[1];
-            }
+            // The list of sources comes after the marker; it is shown
+            // when the chat is reloaded below
+            const visibleAnswer = answer.split(SOURCES_MARKER)[0];
 
-            answerBox.innerHTML = markdownToHtml(answer);
+            answerBox.innerHTML = markdownToHtml(visibleAnswer);
             scrollToBottom();
         }
 
@@ -408,6 +671,7 @@ async function streamAnswer(url, data) {
         // error.name is "AbortError" when the user pressed Stop
         if (error.name !== "AbortError") {
             answerBox.textContent = "Sorry, something went wrong. Please try again.";
+            console.error(error);
         }
     }
 
@@ -419,11 +683,15 @@ async function streamAnswer(url, data) {
         await new Promise((resolve) => setTimeout(resolve, 600));
     }
 
-    // Reload the chat from the database (to get message ids)
+    // Reload the chat from the database (to get message ids and sources)
     if (chatId === currentChatId) {
-        const chat = await getData(`/api/chats/${chatId}`);
-        currentMessages = chat.messages;
-        showMessages();
+        try {
+            const chat = await getData(`/api/chats/${chatId}`);
+            currentMessages = chat.messages;
+            showMessages();
+        } catch (error) {
+            showToast("Couldn't reload the chat. Please refresh the page.");
+        }
     }
 
     await loadChats();
@@ -441,7 +709,7 @@ function stopAnswer() {
 
 
 // =================================================================
-// 6. Message buttons: copy, edit, regenerate
+// 7. Message buttons: copy, edit, regenerate
 // =================================================================
 
 async function copyMessage(index, button) {
@@ -464,32 +732,73 @@ async function copyMessage(index, button) {
     setTimeout(() => { button.innerHTML = COPY_ICON; }, 1500);
 }
 
-async function editQuestion(index) {
+function editQuestion(index) {
     if (isAnswering) return;
 
+    editingIndex = index;
+    showMessages();
+}
+
+function cancelEdit() {
+    editingIndex = null;
+    showMessages();
+}
+
+async function saveEdit() {
+    if (isAnswering || editingIndex === null) return;
+
+    const index = editingIndex;
     const message = currentMessages[index];
-    const newText = prompt("Edit your question:", message.content);
+    const editInput = document.getElementById("edit-input");
+    const newText = editInput.value.trim();
 
-    if (newText === null || newText.trim() === "") return;
+    if (newText === "") return;
 
-    // Save the new question; the server deletes everything after it
-    await sendData(`/api/chats/${currentChatId}/messages/${message.id}`, "PATCH", { content: newText });
+    // Nothing changed: keep the conversation as it is
+    if (newText === message.content.trim()) {
+        cancelEdit();
+        return;
+    }
+
+    for (const button of messagesBox.querySelectorAll(".edit-box button")) {
+        button.disabled = true;
+    }
+
+    // Save the new question; the server deletes everything after it,
+    // because those answers replied to the old question
+    try {
+        await sendData(`/api/chats/${currentChatId}/messages/${message.id}`, "PATCH", { content: newText });
+    } catch (error) {
+        showToast("Couldn't save your edit. Please try again.");
+        for (const button of messagesBox.querySelectorAll(".edit-box button")) {
+            button.disabled = false;
+        }
+        return;
+    }
 
     // Show the edited question without the old answers
     currentMessages = currentMessages.slice(0, index + 1);
-    currentMessages[index].content = newText.trim();
+    currentMessages[index].content = newText;
+    editingIndex = null;
     showMessages();
 
+    // Answer the edited question (it is now the last question)
     await streamAnswer(`/api/chats/${currentChatId}/regenerate`, {});
 }
 
 
 // =================================================================
-// 7. Suggested questions
+// 8. Suggested questions
 // =================================================================
 
 async function loadStarterQuestions() {
-    const data = await getData("/api/suggestions");
+    let data;
+    try {
+        data = await getData("/api/suggestions");
+    } catch (error) {
+        starterBox.innerHTML = "";
+        return;
+    }
     let html = "";
 
     for (const question of data.suggestions) {
@@ -503,10 +812,16 @@ async function loadStarterQuestions() {
 async function loadFollowUps(chatId) {
     followUpBox.innerHTML = '<span class="text-xs text-gray-400 py-1.5">Finding follow-up questions...</span>';
 
-    const data = await sendData(`/api/chats/${chatId}/follow-ups`, "POST");
+    let data = { suggestions: [] };
+    try {
+        data = await sendData(`/api/chats/${chatId}/follow-ups`, "POST");
+    } catch (error) {
+        // Follow-ups are optional; show nothing
+    }
 
-    // Skip if the user opened another chat or asked something new
-    if (chatId !== currentChatId || isAnswering) return;
+    // Skip if the user opened another chat, asked something new or
+    // started editing a question
+    if (chatId !== currentChatId || isAnswering || editingIndex !== null) return;
 
     if (data.suggestions.length === 0) {
         followUpBox.innerHTML = "";
@@ -526,7 +841,7 @@ async function loadFollowUps(chatId) {
 
 
 // =================================================================
-// 8. Button clicks and start-up
+// 9. Button clicks and start-up
 // =================================================================
 
 // Send button (or Stop button while answering)
@@ -583,7 +898,31 @@ messagesBox.addEventListener("click", (event) => {
 
     if (action === "copy") copyMessage(index, button);
     if (action === "edit") editQuestion(index);
+    if (action === "cancel-edit") cancelEdit();
+    if (action === "save-edit") saveEdit();
     if (action === "regenerate") regenerateAnswer();
+});
+
+// Typing in the edit box: Enter saves, Shift + Enter adds a new line,
+// Esc cancels. Save is disabled while the box is empty.
+messagesBox.addEventListener("keydown", (event) => {
+    if (event.target.id !== "edit-input") return;
+
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        saveEdit();
+    } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelEdit();
+    }
+});
+
+messagesBox.addEventListener("input", (event) => {
+    if (event.target.id !== "edit-input") return;
+
+    resizeEditBox(event.target);
+    const saveButton = messagesBox.querySelector("[data-action='save-edit']");
+    saveButton.disabled = event.target.value.trim() === "";
 });
 
 // Clicks on suggested questions (welcome screen and follow-ups)
@@ -602,6 +941,9 @@ newChatBtn.addEventListener("click", () => {
     closeSidebar();
 });
 clearAllBtn.addEventListener("click", deleteAllChats);
+deleteChatBtn.addEventListener("click", () => {
+    if (currentChatId !== null) deleteChat(currentChatId);
+});
 document.getElementById("open-sidebar").addEventListener("click", openSidebar);
 document.getElementById("close-sidebar").addEventListener("click", closeSidebar);
 sidebarBackdrop.addEventListener("click", closeSidebar);
