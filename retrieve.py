@@ -48,14 +48,33 @@ HISTORY_ANSWER_LENGTH = 700    # characters kept from each earlier answer
 CONTEXT_WINDOW = 8192
 MAX_ANSWER_TOKENS = 2048
 
-NO_INFO_ANSWER = (
-    "I'm sorry, but the available Farmora documents do not provide "
-    "sufficient information to answer that question.\n\n"
-    "I can help with topics the documents cover, such as rice and corn "
-    "production, vegetable and strawberry growing, composting and organic "
-    "farming inputs, urban and home gardening, integrated farm systems, "
-    "and organic poultry, hog and goat raising."
+# The one sentence Farmora uses when it can't answer. The system prompt
+# below tells the model to use the same sentence.
+NO_INFO_ANSWER = "I'm sorry, but I do not have sufficient information to answer your question."
+
+# Profanity: Farmora stays calm instead of refusing or copying the words.
+# Whole words only, so words like "shiitake" are not matched.
+PROFANE_WORDS = [
+    # English
+    r"fuck\w*", r"motherfuck\w*", r"shit", r"shitty", r"bullshit", r"bitch\w*",
+    r"bastards?", r"assholes?", r"dickhead", r"damn\w*", r"crap", r"crappy",
+    r"wtf", r"stfu", r"pissed", r"screw you",
+    # Filipino
+    r"putang ?ina\w*", r"tang ?ina\w*", r"kingina", r"puta", r"gago", r"gaga",
+    r"ulol", r"bobo", r"tanga", r"punyeta", r"pakshet", r"tarantado"
+]
+PROFANITY_PATTERN = re.compile(r"\b(" + "|".join(PROFANE_WORDS) + r")\b", re.IGNORECASE)
+
+# Reply when the message is only frustration or insults
+CALM_ANSWER = (
+    "I can tell you're frustrated, and that's completely understandable. "
+    "Farming problems can be stressful. Let's take it one step at a time.\n\n"
+    "Tell me what's happening: the crop or animal, what you're seeing, "
+    "and when it started. I'll look for what my farming documents say about it."
 )
+
+# Added before the answer when a farming question includes profanity
+CALM_OPENING = "I understand this is frustrating. Let's work through it together.\n\n"
 
 GREETING_ANSWER = (
     "Hello! I'm Farmora, your farming guide. Ask me about crops, soil, "
@@ -154,6 +173,13 @@ def format_history(history, answer_length=None):
             lines.append("Farmora: " + content)
 
     return "\n".join(lines)
+
+
+def remove_profanity(text):
+    # Returns the text without profanity, and whether any was found
+    cleaned, count = PROFANITY_PATTERN.subn(" ", text)
+    cleaned = " ".join(cleaned.split())
+    return cleaned, count > 0
 
 
 def small_talk_answer(question):
@@ -375,15 +401,17 @@ GROUNDING RULES (most important)
 
 WHEN THE EXCERPTS ARE NOT ENOUGH
 - If the excerpts fully answer the question, give a complete answer.
-- If they answer only part of it, answer that part fully, then add a section titled "### What the documents don't cover" that says plainly which parts of the question the documents do not answer. Do not guess those parts.
+- If they answer only part of it, answer that part fully. Do not guess those parts. Do not add a separate section explaining what the documents do not cover.
+IMPORTANT:
 - If the excerpts do not answer the question at all, or the question is not about agriculture, reply with exactly this sentence and nothing else:
-I'm sorry, but the available Farmora documents do not provide sufficient information to answer that question.
+I'm sorry, but I do not have sufficient information to answer your question.
 
 HOW TO WRITE THE ANSWER
 - Be thorough. Include every relevant detail the excerpts give: explanations, reasons, quantities, timings, examples, varieties, materials, precautions and warnings. Do not shorten the answer or leave out useful information that is in the excerpts.
 - Explain concepts: say what something is, why it matters and how it works, as far as the excerpts explain it. Don't stop at a one-line definition.
 - Answer every part of the question.
-- Start with a short overview (1-3 sentences) that directly answers the question.
+- Start with a short overview (1-3 sentences) that directly answers the question. When you cannot answer the question, explicitly state that you do not have enough information for it.
+ Do not say that the answer is not provided in the excerpts.
 - Then organise the answer with Markdown headings (###) for each main part.
 - Use numbered lists for steps and procedures. Give all the steps in the right order, with their quantities and timings.
 - Use bullet points for benefits, types, materials, symptoms or tips. Start each bullet with a **bold label** followed by an explanation.
@@ -434,20 +462,36 @@ def generate_response_stream(question, history):
     # app.py as soon as the model writes it. The last piece is
     # SOURCES_MARKER followed by the list of documents used.
 
+    # Profanity is removed before searching, so it doesn't spoil the search
+    question, has_profanity = remove_profanity(question)
+
+    if has_profanity:
+        print("\n[Farmora] Profanity found. Responding calmly.")
+
     canned = small_talk_answer(question)
     if canned is not None:
         yield canned
         yield SOURCES_MARKER + "[]"
         return
 
+    # Only profanity, with no question left
+    if not re.search(r"[A-Za-z]{2}", question):
+        yield CALM_ANSWER if has_profanity else NO_INFO_ANSWER
+        yield SOURCES_MARKER + "[]"
+        return
+
     search_question = rewrite_question(question, history)
     context = find_context(search_question)
 
-    # Nothing relevant was found: don't let the model guess
+    # Nothing relevant was found: don't let the model guess.
+    # An upset user without a farming question gets a calm reply.
     if len(context) == 0:
-        yield NO_INFO_ANSWER
+        yield CALM_ANSWER if has_profanity else NO_INFO_ANSWER
         yield SOURCES_MARKER + "[]"
         return
+
+    if has_profanity:
+        yield CALM_OPENING
 
     messages = build_messages(question, search_question, history, context)
 
