@@ -34,7 +34,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 DOCUMENT_FILE = "documents/combined_agriculture_documents.md"
 VECTOR_DB_DIR = "vector_db"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+PASSAGE_SIZE = 400      # this model reads about 128 tokens, so passages are shorter
+PASSAGE_OVERLAP = 80
 
 PASSAGES_COLLECTION = "farmora_passages"
 SECTIONS_COLLECTION = "farmora_sections"

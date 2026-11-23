@@ -76,10 +76,16 @@ CALM_ANSWER = (
 # Added before the answer when a farming question includes profanity
 CALM_OPENING = "I understand this is frustrating. Let's work through it together.\n\n"
 
+TOPICS_HINT = (
+    "\n\nI can help with rice, corn, vegetables (tomato, ampalaya, okra, "
+    "pechay, squash, sitaw, cabbage and more), strawberry, composting and "
+    "organic concoctions, and raising hogs, chickens, goats and sheep."
+)
+
 GREETING_ANSWER = (
-    "Hello! I'm Farmora, your farming guide. Ask me about crops, soil, "
-    "fertilizers, composting, pests, gardening or raising animals, and "
-    "I'll do my best to help."
+    "Hello! I'm Farmora, your farming guide. Ask me about rice, corn, "
+    "vegetables, strawberry, composting, organic concoctions, or raising "
+    "hogs, chickens, goats and sheep, and I'll do my best to help."
 )
 
 THANKS_ANSWER = "You're welcome! Let me know if you have another farming question."
@@ -112,7 +118,55 @@ STARTER_QUESTIONS = [
     "How can I prevent African swine fever?"
 ]
 
-
+#word similarities
+CROP_GROUPS = [
+    # Animals
+    (["pig", "piggery", "pigery", "baboy", "hog", "swine"], ["hog", "swine", "pig", "piggery"]),
+    (["chicken", "manok", "poultry"], ["chicken", "poultry"]),
+    (["goat", "kambing"], ["goat"]),
+    (["sheep", "tupa"], ["sheep"]),
+    (["duck", "itik", "pato"], ["duck"]),
+    (["cattle", "cow", "baka"], ["cattle", "cow"]),
+    (["carabao", "kalabaw"], ["carabao"]),
+    (["fish", "tilapia", "bangus", "isda"], ["fish", "tilapia", "bangus"]),
+    (["shrimp", "hipon"], ["shrimp"]),
+    (["rabbit", "kuneho"], ["rabbit"]),
+    (["bee", "honey"], ["bee", "honey"]),
+    # Crops
+    (["rice", "palay"], ["rice", "palay"]),
+    (["corn", "mais"], ["corn", "mais"]),
+    (["tomato", "kamatis"], ["tomato"]),
+    (["eggplant", "talong"], ["eggplant", "talong"]),
+    (["squash", "kalabasa"], ["squash", "kalabasa"]),
+    (["ampalaya", "bitter gourd"], ["ampalaya", "bitter gourd"]),
+    (["sitaw", "string bean"], ["sitaw", "asparagus bean"]),
+    (["pechay"], ["pechay"]),
+    (["cabbage", "repolyo"], ["cabbage"]),
+    (["okra"], ["okra"]),
+    (["sili", "pepper"], ["pepper", "sili"]),
+    (["strawberry", "strawberries"], ["strawberry", "strawberries"]),
+    (["sweet potato", "camote", "kamote"], ["sweet potato", "camote"]),
+    (["potato", "patatas"], ["potato"]),
+    (["cassava", "kamoteng kahoy"], ["cassava"]),
+    (["kangkong"], ["kangkong"]),
+    (["lettuce"], ["lettuce"]),
+    (["onion", "sibuyas"], ["onion"]),
+    (["garlic", "bawang"], ["garlic"]),
+    (["coffee", "kape"], ["coffee"]),
+    (["mango", "mangga"], ["mango"]),
+    (["banana", "saging"], ["banana"]),
+    (["coconut", "niyog"], ["coconut"]),
+    (["cacao"], ["cacao"]),
+    (["papaya"], ["papaya"]),
+    (["pineapple", "pinya"], ["pineapple"]),
+    (["calamansi"], ["calamansi"]),
+    (["durian"], ["durian"]),
+    (["lanzones"], ["lanzones"]),
+    (["rambutan"], ["rambutan"]),
+    (["avocado"], ["avocado"]),
+    (["carrot"], ["carrot"]),
+    (["mushroom"], ["mushroom"]),
+]
 # ---------------------------------------------------------------
 # Load the embedding model, the vector database and the AI model
 # ---------------------------------------------------------------
@@ -127,16 +181,26 @@ answer_llm = ChatOllama(
     model=MODEL_NAME,
     temperature=0.2,
     num_ctx=CONTEXT_WINDOW,
-    num_predict=MAX_ANSWER_TOKENS
+    num_predict=MAX_ANSWER_TOKENS,
+    keep_alive="30m"
 )
 
 # Small jobs: rewriting questions and suggesting follow-ups
 helper_llm = ChatOllama(
     model=MODEL_NAME,
     temperature=0.1,
-    num_ctx=4096,
-    num_predict=200
+    num_ctx=CONTEXT_WINDOW,
+    num_predict=200,
+    keep_alive="30m"
 )
+
+def warm_up():
+    # Loads the model into memory so the first question doesn't wait for it
+    try:
+        helper_llm.invoke("Reply with OK.")
+        print("\n[Farmora] Model loaded and ready.\n")
+    except Exception as problem:
+        print("\n[Farmora] Could not load the model yet:", problem, "\n")
 
 if len(passages.get(limit=1)["ids"]) == 0:
     print("\n[Farmora] The knowledge base is empty. Run: python ingest.py\n")
@@ -362,6 +426,67 @@ def find_context(search_question):
 
     return context
 
+def word_in(word, text):
+    # True if the word is in the text as a whole word ("hog" or "hogs",
+    # but not "hedgehog")
+    pattern = r"\b" + re.escape(word) + r"(?:s|es)?\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def crops_in_question(question):
+    # Returns the document words for every crop or animal the question names
+    found = []
+    for user_words, document_words in CROP_GROUPS:
+        for word in user_words:
+            if word_in(word, question):
+                found.append(document_words)
+                break
+    return found
+
+
+def add_document_words(question):
+    # Adds the documents' word to the search:
+    # "what is pigery" -> "what is pigery hog"
+    extra = []
+    for document_words in crops_in_question(question):
+        already_there = any(word_in(word, question) for word in document_words)
+        if not already_there:
+            extra.append(document_words[0])
+
+    if len(extra) == 0:
+        return question
+    return question + " " + " ".join(extra)
+
+
+def missing_crops(question, context):
+    # Crops or animals the question names that no found section mentions
+    context_text = " ".join(item["subject"] + " " + item["text"] for item in context)
+
+    missing = []
+    for document_words in crops_in_question(question):
+        mentioned = any(word_in(word, context_text) for word in document_words)
+        if not mentioned:
+            missing.append(document_words[0])
+    return missing
+
+
+def choose_context(search_question):
+    # Finds the sections to answer from. Returns (sections, unknown crops).
+    # Empty sections means Farmora must refuse.
+    context = find_context(add_document_words(search_question))
+
+    if len(context) == 0:
+        return [], []
+
+    named = crops_in_question(search_question)
+    unknown = missing_crops(search_question, context)
+
+    # Every crop the user asked about is missing: refuse
+    if len(named) > 0 and len(unknown) == len(named):
+        print("[Farmora] The documents don't cover:", ", ".join(unknown), "\n")
+        return [], unknown
+
+    return context, unknown
 
 def format_context(context):
     # No numbers or "excerpt" labels: the model would copy them into the
@@ -434,10 +559,16 @@ Bad: "Overview: The question asks about feeding growers. According to [Excerpt 5
 Good: "Growing chickens need a ration that changes as they get older. Here's how to feed them:" followed by the details."""
 
 
-def build_messages(question, search_question, history, context):
+def build_messages(question, search_question, history, context, unknown=None):
     standalone = ""
     if search_question.strip().lower() != question.strip().lower():
         standalone = f"\n(Meaning of the question in this conversation: {search_question})"
+
+    if unknown:
+        standalone = standalone + (
+                "\n(You know nothing about " + ", ".join(unknown) +
+                ". Say so in one sentence and don't guess.)"
+        )
 
     recent_history = history[-HISTORY_FOR_ANSWER:]
 
@@ -551,29 +682,75 @@ def clean_text(text):
 
     return "\n".join(lines)
 
+# How many words of each sentence are held back to check for a leak
+CHECK_WORDS = 4
+
+# Sentence starts that may be a leak: wait for the whole sentence, then clean it
+LEAK_START = re.compile(
+    r"^\s*(?:#{1,6}\s*)?[*_]*\s*(?:"
+    r"according\b|based on\b|as (?:stated|mentioned|described|shown|noted|seen|per)\b|as per\b|per the\b"
+    r"|(?:from|in) (?:the |these |my )?" + SOURCE_WORDS +
+    r"|(?:the|these|this|my) " + SOURCE_WORDS +
+    r"|(?:the|your|this) (?:user'?s? )?question\b|you(?:'re| are) asking\b|to answer\b"
+    r"|overview\b|introduction\b)",
+    re.IGNORECASE
+)
+
+# Possible "[Excerpt 3]" in the middle of a sentence
+MID_LEAK = re.compile(r"\[|\bexcerpt", re.IGNORECASE)
+
 
 class AnswerCleaner:
-    # Streams the answer one finished sentence at a time, cleaned.
-    # The unfinished sentence is held back until it ends.
+    # Streams the answer almost token by token.
+    # The first few words of each sentence are held back for a moment.
+    # If they start like "According to the documents...", the whole
+    # sentence is held and cleaned. Otherwise the rest of the sentence
+    # is shown as soon as each token arrives.
 
     def __init__(self):
-        self.pending = ""
+        self.pending = ""        # text not shown yet
+        self.streaming = False   # True once the current sentence looks safe
 
     def add(self, text):
         self.pending = self.pending + text
+        output = ""
 
-        ends = [match.end() for match in SENTENCE_END.finditer(self.pending)]
-        if len(ends) == 0:
-            return ""
+        # 1. Send every finished sentence
+        match = SENTENCE_END.search(self.pending)
+        while match:
+            sentence = self.pending[:match.end()]
+            self.pending = self.pending[match.end():]
+            output = output + self.clean(sentence)
+            self.streaming = False
+            match = SENTENCE_END.search(self.pending)
 
-        ready = self.pending[:ends[-1]]
-        self.pending = self.pending[ends[-1]:]
-        return clean_text(ready)
+        # 2. The unfinished sentence
+        if MID_LEAK.search(self.pending):
+            return output    # maybe "[Excerpt 3]": wait for the sentence end
+
+        if not self.streaming:
+            if len(self.pending.split()) <= CHECK_WORDS:
+                return output    # too few words to judge yet
+            if LEAK_START.match(self.pending):
+                return output    # suspicious start: wait for the sentence end
+            self.streaming = True
+
+        output = output + self.pending
+        self.pending = ""
+        return output
+
+    def clean(self, text):
+        if self.streaming:
+            # The start of this sentence is already on screen,
+            # so only citations can be removed from the rest
+            return LEAK_CITATION.sub("", text)
+        return clean_text(text)
 
     def finish(self):
-        ready = self.pending
+        text = self.clean(self.pending)
         self.pending = ""
-        return clean_text(ready)
+        self.streaming = False
+        return text
 
 
 def numbers_not_in_context(answer, context):
@@ -614,19 +791,25 @@ def generate_response_stream(question, history):
         return
 
     search_question = rewrite_question(question, history)
-    context = find_context(search_question)
+    context,unknown = choose_context(search_question)
 
     # Nothing relevant was found: don't let the model guess.
     # An upset user without a farming question gets a calm reply.
     if len(context) == 0:
-        yield CALM_ANSWER if has_profanity else NO_INFO_ANSWER
+        if has_profanity and len(question.split()) < 3:
+            # Mostly frustration, no real question ("fuck you")
+            yield CALM_ANSWER
+        else:
+            if has_profanity:
+                yield CALM_OPENING
+            yield NO_INFO_ANSWER + TOPICS_HINT
         yield SOURCES_MARKER + "[]"
         return
 
     if has_profanity:
         yield CALM_OPENING
 
-    messages = build_messages(question, search_question, history, context)
+    messages = build_messages(question, search_question, history, context,unknown)
 
     answer = ""
     cleaner = AnswerCleaner()
@@ -643,6 +826,10 @@ def generate_response_stream(question, history):
         answer = answer + text
         yield text
 
+    if is_refusal(answer):
+        answer = answer + TOPICS_HINT
+        yield TOPICS_HINT
+
     sources = [] if is_refusal(answer) else list_sources(context)
 
     print("\n========== MODEL ANSWER ==========")
@@ -652,6 +839,9 @@ def generate_response_stream(question, history):
     missing = numbers_not_in_context(answer, context)
     if missing and not is_refusal(answer):
         print("[Farmora] Check these numbers, they are not in the retrieved sections:", ", ".join(missing))
+
+        with open("unverified_numbers.log", "a", encoding="utf-8") as log:
+            log.write(question + "\t" + ", ".join(missing) + "\n")
     print()
 
     yield SOURCES_MARKER + json.dumps(sources)

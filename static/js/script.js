@@ -40,6 +40,7 @@ const dialogMessage = document.getElementById("dialog-message");
 const dialogInput = document.getElementById("dialog-input");
 const dialogConfirm = document.getElementById("dialog-confirm");
 const toast = document.getElementById("toast");
+const jumpBtn = document.getElementById("jump-btn");
 
 // Must be the same as SOURCES_MARKER in retrieve.py. The server sends it
 // after the answer, followed by the list of documents used.
@@ -65,6 +66,9 @@ const REGENERATE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="n
 const CHAT_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
 
 const BUTTON_STYLE = "p-1.5 rounded-lg text-gray-400 hover:text-darkGreen hover:bg-white";
+
+// Farmora's picture next to its answers
+const AVATAR = '<img src="/static/images/logo.png" alt="Farmora" class="w-8 h-8 shrink-0 rounded-full bg-[#fffdf6] border border-wheat p-0.5 mt-1">';
 
 
 // =================================================================
@@ -117,6 +121,44 @@ function markdownToHtml(text) {
 
 function scrollToBottom() {
     chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+// Puts the blinking cursor right after the last word of the answer,
+// even inside a list item or heading, instead of on a line below it
+const INLINE_TAGS = ["STRONG", "EM", "B", "I", "CODE", "A", "SPAN", "BR", "IMG"];
+
+function addCursor(box) {
+    let target = box;
+    while (target.lastElementChild && !INLINE_TAGS.includes(target.lastElementChild.tagName)) {
+        target = target.lastElementChild;
+    }
+
+    const cursor = '<span class="live-cursor" aria-hidden="true"></span>';
+    if (target.tagName === "HR") {
+        target.insertAdjacentHTML("afterend", cursor);
+    } else {
+        target.insertAdjacentHTML("beforeend", cursor);
+    }
+}
+
+// True when the user is at (or near) the bottom of the chat
+function isNearBottom() {
+    const distance = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
+    return distance < 120;
+}
+
+// Scrolls down only if the user hasn't scrolled up to read
+function followAnswer() {
+    if (isNearBottom()) {
+        scrollToBottom();
+    }
+    updateJumpButton();
+}
+
+// Shows "Jump to latest" when the user is far from the bottom
+function updateJumpButton() {
+    const show = currentMessages.length > 0 && !isNearBottom();
+    jumpBtn.classList.toggle("hidden", !show);
 }
 
 // Remember the open chat so it reopens after a refresh
@@ -259,13 +301,14 @@ function showChatList() {
     let html = "";
 
     for (const chat of chats) {
-        let style = "hover:bg-gray-100 text-gray-700";
+        let style = "hover:bg-[#f3eedf] text-gray-700";
         if (chat.id === currentChatId) {
-            style = "active bg-green-50 text-darkGreen";
+            style = "active bg-[#eef4e4] text-darkGreen";
         }
 
         html += `
-            <div class="chat-item flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer text-sm ${style}"
+            <div class="chat-item flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer text-sm outline-none focus-visible:ring-2 focus-visible:ring-greenSolid ${style}"
+                 tabindex="0" role="button" aria-label="Open chat: ${escapeHtml(chat.title)}"
                  data-action="open" data-id="${chat.id}">
                 <span class="text-gray-400">${CHAT_ICON}</span>
                 <span class="flex-1 truncate" title="${escapeHtml(chat.title)}">${escapeHtml(chat.title)}</span>
@@ -425,6 +468,50 @@ function closeSidebar() {
     sidebarBackdrop.classList.add("hidden");
 }
 
+// Wide screens: the sidebar stays in place and can be hidden or shown.
+// Phones: it slides over the page (openSidebar / closeSidebar above).
+const wideScreen = window.matchMedia("(min-width: 768px)");
+
+function setSidebarHidden(hidden) {
+    document.body.classList.toggle("sidebar-collapsed", hidden);
+    try {
+        localStorage.setItem("farmora-sidebar", hidden ? "hidden" : "shown");
+    } catch (error) {
+        // Storage is blocked; the choice just isn't remembered
+    }
+}
+
+function showSidebar() {
+    if (wideScreen.matches) {
+        setSidebarHidden(false);
+    } else {
+        openSidebar();
+    }
+}
+
+function hideSidebar() {
+    if (wideScreen.matches) {
+        setSidebarHidden(true);
+    } else {
+        closeSidebar();
+    }
+}
+
+function toggleSidebar() {
+    let isHidden;
+    if (wideScreen.matches) {
+        isHidden = document.body.classList.contains("sidebar-collapsed");
+    } else {
+        isHidden = sidebar.classList.contains("-translate-x-full");
+    }
+
+    if (isHidden) {
+        showSidebar();
+    } else {
+        hideSidebar();
+    }
+}
+
 
 // =================================================================
 // 5. Showing messages
@@ -448,6 +535,12 @@ function showMessages() {
     }
 
     messagesBox.innerHTML = html;
+
+    // The welcome screen starts at the top, so nothing is hidden
+    if (currentMessages.length === 0) {
+        chatContainer.scrollTop = 0;
+        return;
+    }
 
     if (editingIndex === null) {
         scrollToBottom();
@@ -484,7 +577,7 @@ function messageHtml(message, index, isLast) {
 
         return `
             <div class="message flex flex-col items-end mt-6 transition-opacity ${faded}">
-                <div class="bg-white px-5 py-3 rounded-2xl max-w-[85%] whitespace-pre-wrap break-words shadow-sm">${escapeHtml(message.content)}</div>
+                <div class="bg-darkGreen text-white px-5 py-3 rounded-2xl rounded-br-md max-w-[85%] whitespace-pre-wrap break-words shadow-sm">${escapeHtml(message.content)}</div>
                 <div class="message-actions flex gap-1 mt-1">
                     ${editButton}
                     <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy" aria-label="Copy">${COPY_ICON}</button>
@@ -497,7 +590,7 @@ function messageHtml(message, index, isLast) {
     if (SHOW_SOURCES && message.sources && message.sources.length > 0) {
         let chips = "";
         for (const source of message.sources) {
-            chips += `<span class="px-2 py-0.5 rounded-full bg-green-50 text-darkGreen border border-greenSolid/20">${escapeHtml(source)}</span>`;
+            chips += `<span class="px-2 py-0.5 rounded-full bg-[#eef4e4] text-darkGreen border border-greenSolid/20">${escapeHtml(source)}</span>`;
         }
         sourcesHtml = `
             <div class="flex flex-wrap items-center gap-1.5 mt-3 px-2 text-xs">
@@ -512,17 +605,20 @@ function messageHtml(message, index, isLast) {
 
     let regenerateButton = "";
     if (isLast) {
-        regenerateButton = `<button class="${BUTTON_STYLE}" data-action="regenerate" title="Regenerate answer">${REGENERATE_ICON}</button>`;
+        regenerateButton = `<button class="${BUTTON_STYLE}" data-action="regenerate" title="Regenerate answer" aria-label="Regenerate answer">${REGENERATE_ICON}</button>`;
     }
 
     return `
-        <div class="message flex flex-col items-start mt-4 transition-opacity ${isLast ? "is-last" : ""} ${faded}">
-            <div class="markdown-content px-2 py-1 max-w-full break-words leading-relaxed">${markdownToHtml(message.content)}</div>
-            ${sourcesHtml}
-            ${stoppedNote}
-            <div class="message-actions flex gap-1 mt-1">
-                <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy" aria-label="Copy">${COPY_ICON}</button>
-                ${regenerateButton}
+        <div class="message flex gap-3 mt-4 transition-opacity ${isLast ? "is-last" : ""} ${faded}">
+            ${AVATAR}
+            <div class="flex flex-col items-start min-w-0 flex-1">
+                <div class="markdown-content w-full px-5 py-4 rounded-2xl rounded-tl-md bg-[#fffdf6] border border-[#e7dfc8] shadow-sm break-words leading-relaxed ${message.content.trim().startsWith("I'm sorry") ? "refusal-card" : ""}">${markdownToHtml(message.content)}</div>
+                ${sourcesHtml}
+                ${stoppedNote}
+                <div class="message-actions flex gap-1 mt-1">
+                    <button class="${BUTTON_STYLE}" data-action="copy" data-index="${index}" title="Copy" aria-label="Copy">${COPY_ICON}</button>
+                    ${regenerateButton}
+                </div>
             </div>
         </div>`;
 }
@@ -536,7 +632,7 @@ function editBoxHtml(message, index) {
 
     return `
         <div class="message edit-box flex flex-col items-end mt-6">
-            <div class="w-full max-w-[85%] bg-white rounded-2xl shadow-sm ring-2 ring-greenSolid/50 p-3">
+            <div class="w-full max-w-[85%] bg-[#fffdf6] rounded-2xl shadow-sm ring-2 ring-greenSolid/50 p-3">
                 <textarea id="edit-input" rows="1" aria-label="Edit your question"
                           class="block w-full max-h-60 resize-none overflow-y-auto outline-none bg-transparent px-2 py-1">${escapeHtml(message.content)}</textarea>
                 <p class="text-xs text-gray-400 px-2 mt-2">${note}</p>
@@ -624,9 +720,13 @@ async function streamAnswer(url, data) {
     // Add an empty answer bubble with "thinking" dots
     emptyState.classList.add("hidden");
     messagesBox.insertAdjacentHTML("beforeend", `
-        <div class="message flex flex-col items-start mt-4">
-            <div id="live-answer" class="markdown-content px-2 py-1 max-w-full break-words leading-relaxed">
-                <div class="thinking py-2"><span></span><span></span><span></span></div>
+        <div class="message flex gap-3 mt-4">
+            ${AVATAR}
+            <div id="live-answer" class="markdown-content min-w-0 flex-1 px-5 py-4 rounded-2xl rounded-tl-md bg-[#fffdf6] border border-[#e7dfc8] shadow-sm break-words leading-relaxed">
+                <div class="flex items-center gap-3 py-2">
+                    <div class="thinking"><span></span><span></span><span></span></div>
+                    <span id="wait-status" class="text-sm text-gray-400" aria-live="polite"></span>
+                </div>
             </div>
         </div>`);
     const answerBox = document.getElementById("live-answer");
@@ -637,6 +737,19 @@ async function streamAnswer(url, data) {
 
     let answer = "";
     let finished = false;
+
+    // Tell the user what's happening while they wait for the first words
+    const waitMessages = [
+        [0, "Looking through farming guides…"],
+        [4000, "Writing your answer…"],
+        [15000, "Still working on it. Detailed answers take a little longer…"]
+    ];
+    const waitTimers = waitMessages.map(([delay, text]) => setTimeout(() => {
+        const status = document.getElementById("wait-status");
+        if (status) {
+            status.textContent = text;
+        }
+    }, delay));
 
     try {
         const response = await fetch(url, {
@@ -653,7 +766,6 @@ async function streamAnswer(url, data) {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        answerBox.classList.add("typing-cursor");
 
         while (true) {
             const { value, done } = await reader.read();
@@ -666,7 +778,8 @@ async function streamAnswer(url, data) {
             const visibleAnswer = answer.split(SOURCES_MARKER)[0];
 
             answerBox.innerHTML = markdownToHtml(visibleAnswer);
-            scrollToBottom();
+            addCursor(answerBox);
+            followAnswer();
         }
 
         finished = true;
@@ -679,7 +792,11 @@ async function streamAnswer(url, data) {
         }
     }
 
-    answerBox.classList.remove("typing-cursor");
+    waitTimers.forEach(clearTimeout);
+    const cursor = answerBox.querySelector(".live-cursor");
+    if (cursor) {
+        cursor.remove();
+    }
     setAnswering(false);
 
     // Wait a moment so the server can save a stopped answer
@@ -688,11 +805,20 @@ async function streamAnswer(url, data) {
     }
 
     // Reload the chat from the database (to get message ids and sources)
-    if (chatId === currentChatId) {
+        if (chatId === currentChatId) {
+        // Remember where the user was reading
+        const keepPlace = !isNearBottom();
+        const place = chatContainer.scrollTop;
+
         try {
             const chat = await getData(`/api/chats/${chatId}`);
             currentMessages = chat.messages;
             showMessages();
+
+            if (keepPlace) {
+                chatContainer.scrollTop = place;
+            }
+            updateJumpButton();
         } catch (error) {
             showToast("Couldn't reload the chat. Please refresh the page.");
         }
@@ -806,8 +932,8 @@ async function loadStarterQuestions() {
     let html = "";
 
     for (const question of data.suggestions) {
-        html += `<button class="text-left px-4 py-3 rounded-2xl bg-white border border-gray-200 text-sm text-gray-700 hover:border-greenSolid hover:text-darkGreen"
-                         data-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`;
+        html += `<button class="text-left px-4 py-3 rounded-2xl bg-[#fffdf6] border border-[#e7dfc8] text-sm text-gray-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 hover:border-greenSolid hover:text-darkGreen transition-all flex items-start gap-3"
+                         data-question="${escapeHtml(question)}"><span class="shrink-0 w-7 h-7 rounded-full bg-[#eef4e4] flex items-center justify-center">🌿</span><span class="pt-1">${escapeHtml(question)}</span></button>`;
     }
 
     starterBox.innerHTML = html;
@@ -835,12 +961,12 @@ async function loadFollowUps(chatId) {
     let html = '<span class="text-xs text-gray-400 py-1.5">Try asking:</span>';
 
     for (const question of data.suggestions) {
-        html += `<button class="px-3 py-1.5 rounded-full bg-white border border-greenSolid/40 text-sm text-darkGreen hover:bg-green-50"
+        html += `<button class="px-3 py-1.5 rounded-full bg-[#fffdf6] border border-greenSolid/40 text-sm text-darkGreen hover:bg-[#eef4e4]"
                          data-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`;
     }
 
     followUpBox.innerHTML = html;
-    scrollToBottom();
+    followAnswer();
 }
 
 
@@ -937,6 +1063,18 @@ function onSuggestionClick(event) {
     }
 }
 starterBox.addEventListener("click", onSuggestionClick);
+document.getElementById("topic-chips").addEventListener("click", onSuggestionClick);
+
+// Enter or Space opens the focused chat in the sidebar
+chatList.addEventListener("keydown", (event) => {
+    const item = event.target;
+    if (!item.classList.contains("chat-item")) return;
+
+    if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openChat(Number(item.dataset.id));
+    }
+});
 followUpBox.addEventListener("click", onSuggestionClick);
 
 // Other buttons
@@ -948,9 +1086,21 @@ clearAllBtn.addEventListener("click", deleteAllChats);
 deleteChatBtn.addEventListener("click", () => {
     if (currentChatId !== null) deleteChat(currentChatId);
 });
-document.getElementById("open-sidebar").addEventListener("click", openSidebar);
-document.getElementById("close-sidebar").addEventListener("click", closeSidebar);
-sidebarBackdrop.addEventListener("click", closeSidebar);
+document.getElementById("open-sidebar").addEventListener("click", showSidebar);
+document.getElementById("close-sidebar").addEventListener("click", hideSidebar);
+
+// Ctrl + B (Cmd + B on Mac) hides or shows the sidebar
+document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        toggleSidebar();
+    }
+});
+chatContainer.addEventListener("scroll", updateJumpButton);
+
+jumpBtn.addEventListener("click", () => {
+    chatContainer.scrollTo({ top: chatContainer.scrollHeight, behavior: "smooth" });
+});
 
 // Start-up: load the chats and reopen the last one
 async function start() {

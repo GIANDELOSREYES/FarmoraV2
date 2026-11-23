@@ -1,10 +1,11 @@
 # app.py
-# Farmora v2 web server.
+# Farmora v3 web server.
 #
 # Run:   python app.py
 # Open:  http://127.0.0.1:5050
 
 import json
+import threading
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
@@ -14,7 +15,8 @@ from retrieve import (
     generate_response_stream,
     get_starter_questions,
     is_refusal,
-    suggest_follow_ups
+    suggest_follow_ups,
+    warm_up
 )
 
 app = Flask(__name__)
@@ -29,6 +31,9 @@ OLLAMA_MESSAGE = (
 )
 
 db.init_db()
+
+# Load the model in the background so the first question doesn't wait for it
+threading.Thread(target=warm_up, daemon=True).start()
 
 
 # ---------------------------------------------------------------
