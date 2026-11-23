@@ -1,12 +1,26 @@
 # retrieve.py
-# Farmora's RAG engine: it finds the right parts of the farming PDF
-# and asks the farming-guide model to answer from them.
+# Farmora's RAG engine: it finds the right sections of the farming
+# documents and asks the farming-guide model to answer from them.
+#
+# Steps for every question:
+#   1. Rewrite a follow-up question so it makes sense on its own.
+#   2. Search the knowledge base and keep only relevant sections.
+#   3. Ask the model to answer using only those sections.
+#   4. Send the names of the documents used (shown as "Sources").
 
+import json
 import random
+import re
 
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
+
+from ingest import (
+    PASSAGES_COLLECTION,
+    SECTIONS_COLLECTION,
+    load_embedding_model,
+    open_collection
+)
 
 
 # ---------------------------------------------------------------
@@ -14,55 +28,182 @@ from langchain_ollama import ChatOllama
 # ---------------------------------------------------------------
 
 MODEL_NAME = "farming-guide"   # the model built from the Modelfile
-NUMBER_OF_CHUNKS = 8           # how many PDF chunks to use per question
 
-# If an answer contains one of these phrases, it is replaced
-UNWANTED_PHRASES = [
-    "the provided information does not contain",
-    "the document does not mention",
-    "the retrieved context",
-    "the available information does not",
-    "the database does not contain",
-    "according to the provided document"
+# Retrieval. Scores go from 0 (unrelated) to 1 (same meaning).
+# They were checked against the documents: questions the documents
+# answer score about 0.50-0.85, unrelated questions below 0.47.
+PASSAGES_TO_SEARCH = 24        # passages compared with each question
+MIN_RELEVANCE = 0.48           # below this, the documents can't answer
+SCORE_WINDOW = 0.12            # keep sections close to the best match
+MAX_SECTIONS = 6               # most sections given to the model
+MAX_CONTEXT_CHARACTERS = 12000 # about 3,000 tokens of document text
+
+# How much of the conversation the model sees when answering
+HISTORY_FOR_ANSWER = 4         # messages
+HISTORY_ANSWER_LENGTH = 700    # characters kept from each earlier answer
+
+# Model settings. Ollama's default context window (2,048 tokens) is too
+# small: long prompts were cut silently, so the model lost its
+# instructions or the document text. Llama 3 supports 8,192 tokens.
+CONTEXT_WINDOW = 8192
+MAX_ANSWER_TOKENS = 2048
+
+# The one sentence Farmora uses when it can't answer. The system prompt
+# below tells the model to use the same sentence.
+NO_INFO_ANSWER = "I'm sorry, but I do not have sufficient information to answer your question."
+
+# Profanity: Farmora stays calm instead of refusing or copying the words.
+# Whole words only, so words like "shiitake" are not matched.
+PROFANE_WORDS = [
+    # English
+    r"fuck\w*", r"motherfuck\w*", r"shit", r"shitty", r"bullshit", r"bitch\w*",
+    r"bastards?", r"assholes?", r"dickhead", r"damn\w*", r"crap", r"crappy",
+    r"wtf", r"stfu", r"pissed", r"screw you",
+    # Filipino
+    r"putang ?ina\w*", r"tang ?ina\w*", r"kingina", r"puta", r"gago", r"gaga",
+    r"ulol", r"bobo", r"tanga", r"punyeta", r"pakshet", r"tarantado"
 ]
+PROFANITY_PATTERN = re.compile(r"\b(" + "|".join(PROFANE_WORDS) + r")\b", re.IGNORECASE)
 
-FALLBACK_ANSWER = "I'm sorry, I don't have enough information to answer that question accurately."
+# Reply when the message is only frustration or insults
+CALM_ANSWER = (
+    "I can tell you're frustrated, and that's completely understandable. "
+    "Farming problems can be stressful. Let's take it one step at a time.\n\n"
+    "Tell me what's happening: the crop or animal, what you're seeing, "
+    "and when it started, and I'll help you figure it out."
+)
 
-# Sent to the browser to say "replace the answer" (must match script.js)
-REPLACE_MARKER = "[[FARMORA_REPLACE]]"
+# Added before the answer when a farming question includes profanity
+CALM_OPENING = "I understand this is frustrating. Let's work through it together.\n\n"
 
-# Questions shown on the welcome screen (4 are picked at random)
+TOPICS_HINT = (
+    "\n\nI can help with rice, corn, vegetables (tomato, ampalaya, okra, "
+    "pechay, squash, sitaw, cabbage and more), strawberry, composting and "
+    "organic concoctions, and raising hogs, chickens, goats and sheep."
+)
+
+GREETING_ANSWER = (
+    "Hello! I'm Farmora, your farming guide. Ask me about rice, corn, "
+    "vegetables, strawberry, composting, organic concoctions, or raising "
+    "hogs, chickens, goats and sheep, and I'll do my best to help."
+)
+
+THANKS_ANSWER = "You're welcome! Let me know if you have another farming question."
+
+GREETING_PATTERN = re.compile(
+    r"^(hi|hello|hey|good (morning|afternoon|evening|day)|kumusta|musta)\b[\s!.,?]*(farmora)?[\s!.]*$",
+    re.IGNORECASE
+)
+THANKS_PATTERN = re.compile(
+    r"^(thanks|thank you|thank you so much|salamat|ok|okay|great|nice)[\s!.,]*(farmora)?[\s!.]*$",
+    re.IGNORECASE
+)
+
+# Sent to the browser after the answer, followed by the list of
+# documents used (must match script.js)
+SOURCES_MARKER = "[[FARMORA_SOURCES]]"
+
+# Questions shown on the welcome screen (4 are picked at random).
+# Every one of these is answered by the documents.
 STARTER_QUESTIONS = [
-    "What are the benefits of cover cropping?",
-    "How do I start an organic farm?",
-    "What is crop rotation and why is it important?",
-    "How can I improve my soil fertility naturally?",
-    "How do I control pests without chemicals?",
-    "What should I include in a farm plan?",
-    "What is composting and how do I make compost?",
-    "How does mulching help my crops?",
-    "What are the principles of organic agriculture?",
-    "How can I conserve water on my farm?"
+    "How do I prepare the land for hybrid rice?",
+    "What are the symptoms of nitrogen deficiency in rice?",
+    "How do I make compost at home?",
+    "What is green manuring and what are its benefits?",
+    "How do I grow strawberry runners?",
+    "What are the benefits of an integrated farming system?",
+    "How do I grow tomatoes?",
+    "What is mokusaku and how is it used?",
+    "How do I raise organic chickens?",
+    "How can I prevent African swine fever?"
 ]
 
-
+#word similarities
+CROP_GROUPS = [
+    # Animals
+    (["pig", "piggery", "pigery", "baboy", "hog", "swine"], ["hog", "swine", "pig", "piggery"]),
+    (["chicken", "manok", "poultry"], ["chicken", "poultry"]),
+    (["goat", "kambing"], ["goat"]),
+    (["sheep", "tupa"], ["sheep"]),
+    (["duck", "itik", "pato"], ["duck"]),
+    (["cattle", "cow", "baka"], ["cattle", "cow"]),
+    (["carabao", "kalabaw"], ["carabao"]),
+    (["fish", "tilapia", "bangus", "isda"], ["fish", "tilapia", "bangus"]),
+    (["shrimp", "hipon"], ["shrimp"]),
+    (["rabbit", "kuneho"], ["rabbit"]),
+    (["bee", "honey"], ["bee", "honey"]),
+    # Crops
+    (["rice", "palay"], ["rice", "palay"]),
+    (["corn", "mais"], ["corn", "mais"]),
+    (["tomato", "kamatis"], ["tomato"]),
+    (["eggplant", "talong"], ["eggplant", "talong"]),
+    (["squash", "kalabasa"], ["squash", "kalabasa"]),
+    (["ampalaya", "bitter gourd"], ["ampalaya", "bitter gourd"]),
+    (["sitaw", "string bean"], ["sitaw", "asparagus bean"]),
+    (["pechay"], ["pechay"]),
+    (["cabbage", "repolyo"], ["cabbage"]),
+    (["okra"], ["okra"]),
+    (["sili", "pepper"], ["pepper", "sili"]),
+    (["strawberry", "strawberries"], ["strawberry", "strawberries"]),
+    (["sweet potato", "camote", "kamote"], ["sweet potato", "camote"]),
+    (["potato", "patatas"], ["potato"]),
+    (["cassava", "kamoteng kahoy"], ["cassava"]),
+    (["kangkong"], ["kangkong"]),
+    (["lettuce"], ["lettuce"]),
+    (["onion", "sibuyas"], ["onion"]),
+    (["garlic", "bawang"], ["garlic"]),
+    (["coffee", "kape"], ["coffee"]),
+    (["mango", "mangga"], ["mango"]),
+    (["banana", "saging"], ["banana"]),
+    (["coconut", "niyog"], ["coconut"]),
+    (["cacao"], ["cacao"]),
+    (["papaya"], ["papaya"]),
+    (["pineapple", "pinya"], ["pineapple"]),
+    (["calamansi"], ["calamansi"]),
+    (["durian"], ["durian"]),
+    (["lanzones"], ["lanzones"]),
+    (["rambutan"], ["rambutan"]),
+    (["avocado"], ["avocado"]),
+    (["carrot"], ["carrot"]),
+    (["mushroom"], ["mushroom"]),
+]
 # ---------------------------------------------------------------
 # Load the embedding model, the vector database and the AI model
 # ---------------------------------------------------------------
 
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+embedding_model = load_embedding_model()
 
-vector_store = Chroma(
-    persist_directory="vector_db",
-    embedding_function=embedding_model
-)
+passages = open_collection(PASSAGES_COLLECTION, embedding_model)
+sections = open_collection(SECTIONS_COLLECTION, embedding_model)
 
-llm = ChatOllama(
+# Writes the answers
+answer_llm = ChatOllama(
     model=MODEL_NAME,
-    temperature=0.3
+    temperature=0.2,
+    num_ctx=CONTEXT_WINDOW,
+    num_predict=MAX_ANSWER_TOKENS,
+    keep_alive="30m"
 )
+
+# Small jobs: rewriting questions and suggesting follow-ups
+helper_llm = ChatOllama(
+    model=MODEL_NAME,
+    temperature=0.1,
+    num_ctx=CONTEXT_WINDOW,
+    num_predict=200,
+    keep_alive="30m"
+)
+
+def warm_up():
+    # Loads the model into memory so the first question doesn't wait for it
+    try:
+        helper_llm.invoke("Reply with OK.")
+        print("\n[Farmora] Model loaded and ready.\n")
+    except Exception as problem:
+        print("\n[Farmora] Could not load the model yet:", problem, "\n")
+
+if len(passages.get(limit=1)["ids"]) == 0:
+    print("\n[Farmora] The knowledge base is empty. Run: python ingest.py\n")
 
 
 # ---------------------------------------------------------------
@@ -73,17 +214,11 @@ def get_starter_questions():
     return random.sample(STARTER_QUESTIONS, 4)
 
 
-def has_unwanted_phrase(text):
-    text = text.lower()
-
-    for phrase in UNWANTED_PHRASES:
-        if phrase in text:
-            return True
-
-    return False
+def is_refusal(answer):
+    return answer.strip().startswith("I'm sorry")
 
 
-def format_history(history):
+def format_history(history, answer_length=None):
     # Turns the list of messages into text like:
     #   User: What is mulching?
     #   Farmora: Mulching is ...
@@ -96,173 +231,620 @@ def format_history(history):
         if message["role"] == "user":
             lines.append("User: " + message["content"])
         else:
-            lines.append("Farmora: " + message["content"])
+            content = message["content"]
+            if answer_length and len(content) > answer_length:
+                content = content[:answer_length].rstrip() + " ..."
+            lines.append("Farmora: " + content)
 
     return "\n".join(lines)
+
+
+def remove_profanity(text):
+    # Returns the text without profanity, and whether any was found
+    cleaned, count = PROFANITY_PATTERN.subn(" ", text)
+    cleaned = " ".join(cleaned.split())
+    return cleaned, count > 0
+
+
+def small_talk_answer(question):
+    # Greetings and thanks don't need a document search
+    text = question.strip()
+
+    if GREETING_PATTERN.match(text):
+        return GREETING_ANSWER
+    if THANKS_PATTERN.match(text):
+        return THANKS_ANSWER
+    return None
 
 
 # ---------------------------------------------------------------
 # Step 1: Rewrite follow-up questions
 # ---------------------------------------------------------------
 
+def clean_rewrite(text, question):
+    # Keep only the first line and remove labels the model may add
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+
+    if len(lines) == 0:
+        return question
+
+    rewritten = re.sub(r"^(standalone question|rewritten question|question)\s*:\s*",
+                       "", lines[0], flags=re.IGNORECASE)
+    rewritten = rewritten.strip().strip('"').strip()
+
+    # A very long "rewrite" is probably an answer, not a question
+    if rewritten == "" or len(rewritten) > max(300, len(question) * 4):
+        return question
+    return rewritten
+
+
 def rewrite_question(question, history):
     # The first question in a chat doesn't need rewriting
     if len(history) == 0:
         return question
 
-    rewrite_prompt = f"""
-    Given the conversation history and the latest user question,
-    rewrite the latest question into a standalone question.
+    messages = [
+        SystemMessage(content=(
+            "You rewrite follow-up questions so they can be understood "
+            "without the conversation. You never answer questions."
+        )),
+        HumanMessage(content=f"""Conversation history:
+{format_history(history[-6:], answer_length=400)}
 
-    If the question is already understandable without context,
-    keep its original meaning.
+Latest user question:
+{question}
 
-    Do not answer the question.
-    Only return the rewritten question.
+Rewrite the latest user question as one standalone question. Replace words
+like "it", "that", "this crop" or "the second step" with what they refer to
+in the conversation. If the question is already clear on its own, return it
+unchanged. Return only the question on one line, nothing else.""")
+    ]
 
-    Conversation History:
-    {format_history(history)}
-
-    Latest User Question:
-    {question}
-
-    Standalone Question:
-    """
-
-    rewritten = llm.invoke(rewrite_prompt).content.strip()
-
-    if rewritten == "":
+    try:
+        rewritten = clean_rewrite(helper_llm.invoke(messages).content, question)
+    except Exception as problem:
+        print("\n[Farmora] Could not rewrite the question:", problem, "\n")
         return question
+
+    print("\n[Farmora] Standalone question:", rewritten)
     return rewritten
 
 
 # ---------------------------------------------------------------
-# Step 2: Find the most relevant chunks of the PDF
+# Step 2: Find the relevant sections of the documents
 # ---------------------------------------------------------------
 
-def find_context(search_question):
-    results = vector_store.similarity_search_with_relevance_scores(
+def base_section_name(name):
+    return re.sub(r"\s*\(continued\)\s*$", "", name, flags=re.IGNORECASE).strip().lower()
+
+
+def search_sections(search_question):
+    # Searches the small passages, then scores each section by its
+    # best passage. Returns [(score, metadata)], best first.
+    results = passages.similarity_search_with_relevance_scores(
         search_question,
-        k=NUMBER_OF_CHUNKS
+        k=PASSAGES_TO_SEARCH
     )
 
-    print("\n========== RETRIEVAL SCORES ==========")
-    print("Search Question:", search_question)
-
-    chunks = []
+    best = {}
 
     for document, score in results:
-        print(f"\nRelevance Score: {score:.4f}")
-        print(document.page_content)
-        chunks.append(document.page_content)
+        section_id = document.metadata["section_id"]
 
-    print("======================================\n")
+        if section_id not in best or score > best[section_id][0]:
+            best[section_id] = (score, document.metadata)
 
-    return "\n\n".join(chunks)
+    return sorted(best.values(), key=lambda item: item[0], reverse=True)
+
+
+def find_neighbours(metadata):
+    # The PDFs were converted to text, so one topic sometimes continues
+    # into the next section with the same name, e.g. "Land Preparation"
+    # followed by "Land Preparation (continued)".
+    found = sections.get(
+        where={"$and": [
+            {"document": metadata["document"]},
+            {"position": {"$in": [metadata["position"] - 1, metadata["position"] + 1]}}
+        ]}
+    )
+
+    neighbours = []
+    for neighbour in found["metadatas"]:
+        if base_section_name(neighbour["section"]) == base_section_name(metadata["section"]):
+            neighbours.append(neighbour)
+    return neighbours
+
+
+def find_context(search_question):
+    # Returns the sections the model should read, as a list of
+    # {"document", "section", "subject", "text", "score"}.
+    # An empty list means the documents can't answer the question.
+    ranked = search_sections(search_question)
+
+    print("\n========== RETRIEVAL ==========")
+    print("Search question:", search_question)
+
+    for score, metadata in ranked[:10]:
+        print(f"  {score:.3f}  {metadata['document']} / {metadata['section']}")
+
+    if len(ranked) == 0 or ranked[0][0] < MIN_RELEVANCE:
+        print("No section is relevant enough.")
+        print("===============================\n")
+        return []
+
+    # Keep sections that are almost as relevant as the best one
+    cutoff = max(MIN_RELEVANCE - 0.03, ranked[0][0] - SCORE_WINDOW)
+    chosen = [(score, metadata) for score, metadata in ranked if score >= cutoff]
+    chosen = chosen[:MAX_SECTIONS]
+
+    # Add continued sections next to the two best matches
+    chosen_ids = {metadata["section_id"] for _, metadata in chosen}
+    for score, metadata in list(chosen[:2]):
+        for neighbour in find_neighbours(metadata):
+            if neighbour["section_id"] not in chosen_ids:
+                chosen.append((score - 0.01, neighbour))
+                chosen_ids.add(neighbour["section_id"])
+
+    # Read the full sections
+    texts = sections.get(ids=list(chosen_ids))
+    text_by_id = dict(zip(texts["ids"], texts["documents"]))
+
+    # Fill the space with the most relevant sections first
+    context = []
+    used = 0
+
+    for score, metadata in chosen:
+        text = text_by_id.get(metadata["section_id"], "")
+        room = MAX_CONTEXT_CHARACTERS - used
+
+        if text == "" or room < 300:
+            continue
+        if len(text) > room:
+            text = text[:room].rsplit("\n", 1)[0] + "\n[...]"
+
+        used = used + len(text)
+        context.append({
+            "document": metadata["document"],
+            "section": metadata["section"],
+            "subject": metadata["subject"],
+            "position": metadata["position"],
+            "score": score,
+            "text": text
+        })
+
+    # Show sections from the same document together and in their
+    # original order, so steps that run across sections stay in order
+    document_rank = {}
+    for item in context:
+        document_rank.setdefault(item["document"], len(document_rank))
+    context.sort(key=lambda item: (document_rank[item["document"]], item["position"]))
+
+    print(f"\nUsing {len(context)} sections ({used} characters):")
+    for item in context:
+        print(f"  {item['score']:.3f}  {item['document']} / {item['section']}")
+    print("===============================\n")
+
+    return context
+
+def word_in(word, text):
+    # True if the word is in the text as a whole word ("hog" or "hogs",
+    # but not "hedgehog")
+    pattern = r"\b" + re.escape(word) + r"(?:s|es)?\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def crops_in_question(question):
+    # Returns the document words for every crop or animal the question names
+    found = []
+    for user_words, document_words in CROP_GROUPS:
+        for word in user_words:
+            if word_in(word, question):
+                found.append(document_words)
+                break
+    return found
+
+
+def add_document_words(question):
+    # Adds the documents' word to the search:
+    # "what is pigery" -> "what is pigery hog"
+    extra = []
+    for document_words in crops_in_question(question):
+        already_there = any(word_in(word, question) for word in document_words)
+        if not already_there:
+            extra.append(document_words[0])
+
+    if len(extra) == 0:
+        return question
+    return question + " " + " ".join(extra)
+
+
+def missing_crops(question, context):
+    # Crops or animals the question names that no found section mentions
+    context_text = " ".join(item["subject"] + " " + item["text"] for item in context)
+
+    missing = []
+    for document_words in crops_in_question(question):
+        mentioned = any(word_in(word, context_text) for word in document_words)
+        if not mentioned:
+            missing.append(document_words[0])
+    return missing
+
+
+def choose_context(search_question):
+    # Finds the sections to answer from. Returns (sections, unknown crops).
+    # Empty sections means Farmora must refuse.
+    context = find_context(add_document_words(search_question))
+
+    if len(context) == 0:
+        return [], []
+
+    named = crops_in_question(search_question)
+    unknown = missing_crops(search_question, context)
+
+    # Every crop the user asked about is missing: refuse
+    if len(named) > 0 and len(unknown) == len(named):
+        print("[Farmora] The documents don't cover:", ", ".join(unknown), "\n")
+        return [], unknown
+
+    return context, unknown
+
+def format_context(context):
+    # No numbers or "excerpt" labels: the model would copy them into the
+    # answer ("According to [Excerpt 5], ..."). Each block only says
+    # which crop or animal and which topic it is about.
+    blocks = []
+
+    for item in context:
+        blocks.append(
+            f"--- About: {item['subject']} ({item['document']}), {item['section']} ---\n"
+            f"{item['text']}"
+        )
+
+    return "\n\n".join(blocks)
+
+
+def list_sources(context):
+    sources = []
+    for item in context:
+        if item["document"] not in sources:
+            sources.append(item["document"])
+    return sources
 
 
 # ---------------------------------------------------------------
 # Step 3: Build the prompt and stream the answer
 # ---------------------------------------------------------------
 
-def build_prompt(history, context, search_question):
+SYSTEM_PROMPT = """You are Farmora, a friendly and experienced agricultural extension worker. You talk with farmers, students and gardeners the way a knowledgeable person talks with someone who came to ask for advice.
 
-    conversation_history = format_history(history)
+With each question you get your FARMING KNOWLEDGE on the topic. Treat it as what you personally know. It is ALL you know: answer only from it.
 
-    prompt = f"""
-    You are Farmora, a friendly and knowledgeable farming assistant.
-    You talk directly to farmers, students and anyone interested in agriculture.
+WHAT YOU MAY SAY (most important)
+1. Every fact, number, rate, dose, timing, measurement, name and step in your answer must come from your FARMING KNOWLEDGE. Copy quantities and units exactly.
+2. Do not add anything from anywhere else, even if you think it is true. If your FARMING KNOWLEDGE doesn't say it, don't say it.
+3. Each part of your FARMING KNOWLEDGE says which crop or animal it is about. If the user asks about one crop and a part is about another, don't present it as advice for the user's crop. Mention it only if you clearly say which crop it is for.
+4. Your earlier answers in the conversation are not facts. Use the conversation only to understand what the user means.
+5. Never invent statistics, recommendations, procedures, chemical names, fertilizer rates or pesticide doses.
 
-    REFERENCE NOTES (private: the user cannot see these, never mention them):
-    {context}
+HOW YOU SOUND
+- Talk like a person, not like a search tool. Speak directly to the user ("you", "your farm").
+- NEVER mention or hint at where your knowledge comes from. Never use the words "excerpt", "document", "source", "text", "context", "notes", "reference", "material", "the information provided" or "the information given".
+- Never write "according to ...", "based on ...", "the ... states", "as mentioned in ..." or similar.
+- Never talk about the question itself. Don't write "The question asks...", "You are asking about..." or "To answer your question...". Just answer.
+- Never describe what you were or weren't given. Don't write things like "there is no information about layers here".
+- Don't introduce yourself or say you are happy to help.
 
-    CONVERSATION SO FAR (only use it to understand follow-up questions):
-    {conversation_history}
+WHEN YOU KNOW ONLY PART OF THE ANSWER
+- Answer the part you know fully. For the rest, say it plainly in the first person, the way a person would, for example: "I don't have details on feeding layers, though." Don't guess.
 
-    QUESTION:
-    {search_question}
+WHEN YOU CAN'T ANSWER
+- If your FARMING KNOWLEDGE doesn't answer the question at all, or the question isn't about agriculture, reply with exactly this sentence and nothing else:
+I'm sorry, but I do not have sufficient information to answer your question.
 
-    HOW TO ANSWER:
+HOW TO WRITE THE ANSWER
+- Be thorough. Include every relevant detail you know: explanations, reasons, quantities, timings, examples, varieties, materials, precautions and warnings. Don't shorten the answer or leave out anything useful.
+- Explain concepts: what something is, why it matters and how it works. Don't stop at a one-line definition.
+- Answer every part of the question.
+- Begin with 1-3 plain sentences that directly answer the question. No heading before them, and never a heading called "Overview" or "Introduction".
+- Then organise the rest with Markdown headings (###) for each main part.
+- Use numbered lists for steps and procedures, in order, with their quantities and timings.
+- Use bullet points for benefits, types, materials, symptoms or tips. Start each bullet with a **bold label** followed by an explanation.
+- Put warnings in a "### Precautions" section when you know any.
+- Write clearly, simply and warmly.
+- Some of your FARMING KNOWLEDGE was copied from leaflets and may be jumbled. Use only what is clear; don't guess what jumbled text means.
 
-    1. Facts
-       - Use only facts found in the REFERENCE NOTES.
-       - Never invent facts, numbers, fertilizer rates or pesticide doses.
-       - Do not treat earlier Farmora answers in the conversation as facts.
+EXAMPLE
+Question: What should I feed growing chickens?
+Bad: "Overview: The question asks about feeding growers. According to [Excerpt 5], the recommended ration is..."
+Good: "Growing chickens need a ration that changes as they get older. Here's how to feed them:" followed by the details."""
 
-    2. Voice
-       - Answer the question right away, like a helpful expert talking to a friend.
-       - Never introduce yourself. Never write "As Farmora".
-       - Never say you are excited, happy or glad to help.
-       - Never mention the REFERENCE NOTES, "the information", "the document",
-         "the context", "the source" or "the database".
-       - Never write phrases like "according to the information",
-         "based on the provided", "the document says" or
-         "these benefits are supported by".
-       - Do not end with a note about where the answer came from.
 
-    3. Format
-       - Start with one short sentence that answers the question.
-       - For benefits, causes, types or tips: use bullet points,
-         each starting with a **bold label** followed by a short explanation.
-       - For steps or procedures: use a numbered list, one step per line.
-       - Keep sentences short and simple. Avoid long paragraphs.
-       - For a simple question, a short answer is enough.
+def build_messages(question, search_question, history, context, unknown=None):
+    standalone = ""
+    if search_question.strip().lower() != question.strip().lower():
+        standalone = f"\n(Meaning of the question in this conversation: {search_question})"
 
-    4. When you can't answer
-       - Questions about crops, soil, fertilizers, pests, irrigation, livestock,
-         organic farming and farm planning are always farming questions.
-       - If the question is not about farming or agriculture, reply exactly:
-         I'm sorry, I can only help with farming and agriculture topics.
-       - If the REFERENCE NOTES do not contain the answer, reply exactly:
-         I'm sorry, I don't have enough information to answer that question accurately.
-       - If the notes answer only part of the question, answer that part
-         without guessing the rest.
-       - These two exact replies are the only time you may use the word "information".
+    if unknown:
+        standalone = standalone + (
+                "\n(You know nothing about " + ", ".join(unknown) +
+                ". Say so in one sentence and don't guess.)"
+        )
 
-    EXAMPLE
+    recent_history = history[-HISTORY_FOR_ANSWER:]
 
-    Question: What are the benefits of cover cropping?
+    user_message = f"""FARMING KNOWLEDGE (private: everything you know about this topic):
 
-    Bad answer:
-    As Farmora, I'm happy to help! According to the provided information,
-    cover cropping has several benefits... Please note that these benefits
-    are supported by the provided agricultural information.
+{format_context(context)}
 
-    Good answer:
-    Cover cropping protects and improves your soil in several ways:
+CONVERSATION SO FAR (only to understand the question, not a source of facts):
+{format_history(recent_history, answer_length=HISTORY_ANSWER_LENGTH)}
 
-    - **Adds organic matter:** The crops break down and enrich the soil.
-    - **Controls weeds:** A thick cover crowds out weeds.
-    - **Prevents erosion:** Roots hold the soil in place between seasons.
+QUESTION:
+{question}{standalone}
 
-    Now answer the QUESTION.
-    """
-    return prompt
+Answer the user directly and naturally, using only your FARMING KNOWLEDGE. Don't mention where your knowledge comes from."""
+
+    return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_message)]
+
+
+# ---------------------------------------------------------------
+# Keeping the answer natural
+# The prompt tells the model never to mention where its knowledge comes
+# from, but a small model sometimes still writes "According to
+# [Excerpt 5], ..." or "The question asks ...". These patterns remove
+# that before the user sees it.
+# ---------------------------------------------------------------
+
+SOURCE_WORDS = (
+    r"(?:provided |given |available |above )?"
+    r"(?:excerpts?|documents?|sources?|context|notes|reference notes|"
+    r"farming knowledge|information|text|materials?|data)"
+    r"(?:\s+(?:provided|given|above|available))?"
+)
+
+# "According to [Excerpt 5], the ration ..." -> "The ration ..."
+LEAK_PREFIX = re.compile(
+    r"^(\s*)(?:according to|as (?:stated|mentioned|described|shown|noted|seen) in|"
+    r"based on|as per|per|from|in)\s+(?:the\s+|these\s+|my\s+)?"
+    r"(?:\[\s*excerpts?\s*\d+[^\]]*\]|excerpts?\s*\d+(?:\s*(?:,|and|&)\s*\d+)*|" + SOURCE_WORDS + r")"
+    r"\s*[,:]\s*",
+    re.IGNORECASE
+)
+
+# "... is 2 kg [Excerpt 3]." or "(see Excerpt 2 and 4)" or ", as stated in excerpt 4"
+LEAK_CITATION = re.compile(
+    r"\s*[\(\[]\s*(?:see\s+)?excerpts?\s*\d+(?:\s*(?:,|and|&|-|–)\s*\d+)*\s*[\)\]]"
+    r"|\s*,?\s*\b(?:according to|as (?:stated|mentioned) in|in|from|see)\s+(?:the\s+)?"
+    r"excerpts?\s*\d+(?:\s*(?:,|and|&)\s*\d+)*\b",
+    re.IGNORECASE
+)
+
+# Whole sentences about the source material or about the question
+LEAK_SENTENCE = re.compile(
+    r"\bexcerpts?\b"
+    r"|^\s*(?:the|your|this) (?:user'?s? )?question (?:asks|is asking|is about|wants)"
+    r"|^\s*you(?:'re| are) asking"
+    r"|\b(?:the|these|this|my) " + SOURCE_WORDS +
+    r" (?:does|do|did|doesn't|don't|provides?|mentions?|states?|says?|contains?|includes?|covers?|gives?|shows?)\b",
+    re.IGNORECASE
+)
+
+# "### Overview" or "**Overview:**" labels
+OVERVIEW_LINE = re.compile(r"^\s*(?:#{1,6}\s*)?\**\s*(?:overview|introduction)\s*\**:?\s*\**\s*$", re.IGNORECASE)
+OVERVIEW_LABEL = re.compile(r"^(\s*)(?:#{1,6}\s*)?\**\s*(?:overview|introduction)\s*:\s*\**\s*", re.IGNORECASE)
+
+# Where a finished sentence or line ends
+SENTENCE_END = re.compile(r"\n|[.!?](?=\s)")
+
+
+def capitalize_first(text):
+    for index, character in enumerate(text):
+        if character.isalpha():
+            return text[:index] + character.upper() + text[index + 1:]
+        if not character.isspace() and character not in "*_":
+            return text
+    return text
+
+
+def clean_sentence(sentence):
+    cleaned = LEAK_PREFIX.sub(r"\1", sentence)
+    if cleaned != sentence:
+        cleaned = capitalize_first(cleaned)
+
+    cleaned = LEAK_CITATION.sub("", cleaned)
+
+    if LEAK_SENTENCE.search(cleaned):
+        return ""
+    return cleaned
+
+
+def clean_text(text):
+    lines = []
+
+    for line in text.split("\n"):
+        if OVERVIEW_LINE.match(line):
+            continue
+
+        line = OVERVIEW_LABEL.sub(r"\1", line)
+
+        # Split into sentences, keeping the spaces between them
+        parts = re.split(r"(?<=[.!?])(\s+)", line)
+        kept = ""
+        for index in range(0, len(parts), 2):
+            sentence = clean_sentence(parts[index])
+            space = parts[index + 1] if index + 1 < len(parts) else ""
+            if sentence.strip() != "":
+                kept = kept + sentence + space
+            elif parts[index].strip() == "":
+                kept = kept + parts[index] + space
+
+        lines.append(kept)
+
+    return "\n".join(lines)
+
+# How many words of each sentence are held back to check for a leak
+CHECK_WORDS = 4
+
+# Sentence starts that may be a leak: wait for the whole sentence, then clean it
+LEAK_START = re.compile(
+    r"^\s*(?:#{1,6}\s*)?[*_]*\s*(?:"
+    r"according\b|based on\b|as (?:stated|mentioned|described|shown|noted|seen|per)\b|as per\b|per the\b"
+    r"|(?:from|in) (?:the |these |my )?" + SOURCE_WORDS +
+    r"|(?:the|these|this|my) " + SOURCE_WORDS +
+    r"|(?:the|your|this) (?:user'?s? )?question\b|you(?:'re| are) asking\b|to answer\b"
+    r"|overview\b|introduction\b)",
+    re.IGNORECASE
+)
+
+# Possible "[Excerpt 3]" in the middle of a sentence
+MID_LEAK = re.compile(r"\[|\bexcerpt", re.IGNORECASE)
+
+
+class AnswerCleaner:
+    # Streams the answer almost token by token.
+    # The first few words of each sentence are held back for a moment.
+    # If they start like "According to the documents...", the whole
+    # sentence is held and cleaned. Otherwise the rest of the sentence
+    # is shown as soon as each token arrives.
+
+    def __init__(self):
+        self.pending = ""        # text not shown yet
+        self.streaming = False   # True once the current sentence looks safe
+
+    def add(self, text):
+        self.pending = self.pending + text
+        output = ""
+
+        # 1. Send every finished sentence
+        match = SENTENCE_END.search(self.pending)
+        while match:
+            sentence = self.pending[:match.end()]
+            self.pending = self.pending[match.end():]
+            output = output + self.clean(sentence)
+            self.streaming = False
+            match = SENTENCE_END.search(self.pending)
+
+        # 2. The unfinished sentence
+        if MID_LEAK.search(self.pending):
+            return output    # maybe "[Excerpt 3]": wait for the sentence end
+
+        if not self.streaming:
+            if len(self.pending.split()) <= CHECK_WORDS:
+                return output    # too few words to judge yet
+            if LEAK_START.match(self.pending):
+                return output    # suspicious start: wait for the sentence end
+            self.streaming = True
+
+        output = output + self.pending
+        self.pending = ""
+        return output
+
+    def clean(self, text):
+        if self.streaming:
+            # The start of this sentence is already on screen,
+            # so only citations can be removed from the rest
+            return LEAK_CITATION.sub("", text)
+        return clean_text(text)
+
+    def finish(self):
+        text = self.clean(self.pending)
+        self.pending = ""
+        self.streaming = False
+        return text
+
+
+def numbers_not_in_context(answer, context):
+    # A quick check for invented numbers, printed in the terminal so
+    # they can be reviewed. (It can't catch every invented detail.)
+    context_text = " ".join(item["text"] for item in context)
+    context_numbers = set(re.findall(r"\d+(?:\.\d+)?", context_text))
+    answer_numbers = re.findall(r"\d+(?:\.\d+)?", answer)
+
+    missing = []
+    for number in answer_numbers:
+        if number not in context_numbers and number not in missing:
+            missing.append(number)
+    return missing
+
 
 def generate_response_stream(question, history):
-    # This is a generator: "yield" sends each piece of the
-    # answer to app.py as soon as the model writes it.
+    # This is a generator: "yield" sends each piece of the answer to
+    # app.py as soon as the model writes it. The last piece is
+    # SOURCES_MARKER followed by the list of documents used.
+
+    # Profanity is removed before searching, so it doesn't spoil the search
+    question, has_profanity = remove_profanity(question)
+
+    if has_profanity:
+        print("\n[Farmora] Profanity found. Responding calmly.")
+
+    canned = small_talk_answer(question)
+    if canned is not None:
+        yield canned
+        yield SOURCES_MARKER + "[]"
+        return
+
+    # Only profanity, with no question left
+    if not re.search(r"[A-Za-z]{2}", question):
+        yield CALM_ANSWER if has_profanity else NO_INFO_ANSWER
+        yield SOURCES_MARKER + "[]"
+        return
 
     search_question = rewrite_question(question, history)
-    context = find_context(search_question)
-    prompt = build_prompt(history, context, search_question)
+    context,unknown = choose_context(search_question)
+
+    # Nothing relevant was found: don't let the model guess.
+    # An upset user without a farming question gets a calm reply.
+    if len(context) == 0:
+        if has_profanity and len(question.split()) < 3:
+            # Mostly frustration, no real question ("fuck you")
+            yield CALM_ANSWER
+        else:
+            if has_profanity:
+                yield CALM_OPENING
+            yield NO_INFO_ANSWER + TOPICS_HINT
+        yield SOURCES_MARKER + "[]"
+        return
+
+    if has_profanity:
+        yield CALM_OPENING
+
+    messages = build_messages(question, search_question, history, context,unknown)
 
     answer = ""
+    cleaner = AnswerCleaner()
 
-    for chunk in llm.stream(prompt):
-        answer = answer + chunk.content
+    for chunk in answer_llm.stream(messages):
+        if chunk.content:
+            text = cleaner.add(chunk.content)
+            if text:
+                answer = answer + text
+                yield text
 
-        # Stop and send the fallback answer if an unwanted phrase appears
-        if has_unwanted_phrase(answer):
-            print("\n[Farmora] Unwanted phrase found. Sending fallback answer.\n")
-            yield REPLACE_MARKER + FALLBACK_ANSWER
-            return
+    text = cleaner.finish()
+    if text:
+        answer = answer + text
+        yield text
 
-        yield chunk.content
+    if is_refusal(answer):
+        answer = answer + TOPICS_HINT
+        yield TOPICS_HINT
+
+    sources = [] if is_refusal(answer) else list_sources(context)
 
     print("\n========== MODEL ANSWER ==========")
     print(answer.strip())
-    print("==================================\n")
+    print("==================================")
+
+    missing = numbers_not_in_context(answer, context)
+    if missing and not is_refusal(answer):
+        print("[Farmora] Check these numbers, they are not in the retrieved sections:", ", ".join(missing))
+
+        with open("unverified_numbers.log", "a", encoding="utf-8") as log:
+            log.write(question + "\t" + ", ".join(missing) + "\n")
+    print()
+
+    yield SOURCES_MARKER + json.dumps(sources)
 
 
 # ---------------------------------------------------------------
@@ -279,34 +861,48 @@ def clean_suggestion(line):
     return line.strip()
 
 
-def suggest_follow_ups(question, answer):
-    prompt = f"""
-    A farmer asked an agriculture chatbot this question:
-    {question}
+def is_answerable(question):
+    # Only suggest questions the documents can answer
+    ranked = search_sections(question)
+    return len(ranked) > 0 and ranked[0][0] >= MIN_RELEVANCE
 
-    The chatbot answered:
-    {answer}
 
-    Write 3 short follow-up questions the farmer might ask next.
-    Each question must be about farming or agriculture, be under
-    12 words, and relate to the answer above.
+def suggest_follow_ups(question, answer, sources=None):
+    topics = ""
+    if sources:
+        topics = "\nThe answer came from these documents: " + "; ".join(sources)
 
-    Return ONLY the questions, one per line, with no numbering,
-    no bullet points, and no other text.
-    """
+    prompt = f"""A farmer asked an agriculture chatbot this question:
+{question}
 
-    response = llm.invoke(prompt).content
+The chatbot answered:
+{answer[:2000]}
+{topics}
+
+Write 5 short follow-up questions the farmer might ask next.
+Each question must be about farming or agriculture, be under
+12 words, relate to the answer above, and be about a topic the
+same documents are likely to cover.
+
+Return ONLY the questions, one per line, with no numbering,
+no bullet points, and no other text."""
+
+    response = helper_llm.invoke(prompt).content
 
     suggestions = []
 
     for line in response.split("\n"):
         line = clean_suggestion(line)
 
-        # Keep only real questions
-        if len(line) > 8 and line.endswith("?"):
-            suggestions.append(line)
+        # Keep only real questions that the documents can answer
+        if len(line) > 8 and line.endswith("?") and line not in suggestions:
+            if is_answerable(line):
+                suggestions.append(line)
 
-    return suggestions[:3]
+        if len(suggestions) == 3:
+            break
+
+    return suggestions
 
 
 # ---------------------------------------------------------------
@@ -327,9 +923,11 @@ if __name__ == "__main__":
         answer = ""
 
         for chunk in generate_response_stream(question, history):
-            if chunk.startswith(REPLACE_MARKER):
-                chunk = chunk.replace(REPLACE_MARKER, "")
-                answer = ""
+            if chunk.startswith(SOURCES_MARKER):
+                sources = json.loads(chunk[len(SOURCES_MARKER):])
+                if sources:
+                    print("\n\nSources:", "; ".join(sources))
+                continue
             answer = answer + chunk
             print(chunk, end="", flush=True)
 

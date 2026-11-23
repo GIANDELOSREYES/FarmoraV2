@@ -3,21 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1e4d2b">
     <title>Farmora</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="icon" href="{{ url_for('static', filename='images/favicon.ico') }}" sizes="any">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}">
+    <script src="{{ url_for('static', filename='vendor/tailwind.js') }}"></script>
 
     <style type="text/tailwindcss">
         @font-face {
             font-family: 'poppins';
             src: url("{{ url_for('static', filename='fonts/poppins.regular.ttf') }}");
+            font-weight: 400;
+        }
+
+        @font-face {
+            font-family: 'poppins';
+            src: url("{{ url_for('static', filename='fonts/poppins.semibold.ttf') }}");
+            font-weight: 600;
         }
 
         @theme {
-            --color-nudeGray: #f6f6f6;
-            --color-greenSolid: #00bf41;
-            --color-darkGreen: #00521c;
+            --color-nudeGray: #f6f2e7;   /* cream, like dry soil and straw */
+            --color-greenSolid: #3d8b37; /* leaf green */
+            --color-darkGreen: #1e4d2b;  /* forest green */
+            --color-sprout: #a7c957;     /* young sprout */
+            --color-wheat: #e8d9b0;      /* ripe wheat */
+            --color-soil: #8a5a36;       /* soil brown */
             --font-poppins: 'poppins';
-            --shadow-greenFade: 10px 0px 100px 20px rgba(0, 191, 65, 0.25);
+            --shadow-greenFade: 10px 0px 100px 20px rgba(61, 139, 55, 0.12);
         }
     </style>
 
@@ -28,26 +42,85 @@
         .markdown-content li { margin-bottom: 0.5rem; }
         .markdown-content p { margin-bottom: 0.75rem; }
         .markdown-content p:last-child { margin-bottom: 0; }
-        .markdown-content strong { font-weight: 700; }
-        .markdown-content h1, .markdown-content h2, .markdown-content h3 { font-weight: 700; margin: 1rem 0 0.5rem; }
-        .markdown-content code { background: #eef2ef; padding: 0.1rem 0.3rem; border-radius: 0.3rem; }
+        .markdown-content strong { font-weight: 600; }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 { font-weight: 600; margin: 1.25rem 0 0.5rem; color: #1e4d2b; }
+        .markdown-content h1 { font-size: 1.35rem; }
+        .markdown-content h2::before, .markdown-content h3::before {
+            content: ""; display: inline-block; width: 0.6em; height: 0.6em; margin-right: 0.5em;
+            background: #a7c957; border-radius: 0 100% 0 100%; transform: translateY(-0.05em);
+        }
+        .markdown-content h2 { font-size: 1.2rem; }
+        .markdown-content h3 { font-size: 1.08rem; }
+        .markdown-content h4 { font-size: 1rem; }
+        .markdown-content > :first-child { margin-top: 0; }
+        .markdown-content li > ul, .markdown-content li > ol { margin: 0.4rem 0; }
+        .markdown-content code { background: #f1ecdd; padding: 0.1rem 0.3rem; border-radius: 0.3rem; }
+        .markdown-content blockquote { border-left: 3px solid #c9a54a; background: #fbf5e3; padding: 0.6rem 0.9rem; border-radius: 0 0.75rem 0.75rem 0; color: #5b4630; margin: 0.75rem 0; }
+        .markdown-content table { border-collapse: collapse; margin: 0.75rem 0; display: block; overflow-x: auto; max-width: 100%; }
+        .markdown-content th, .markdown-content td { border: 1px solid #e7dfc8; padding: 0.4rem 0.7rem; text-align: left; }
+        .markdown-content th { background: #eef4e4; color: #1e4d2b; }
 
-        /* Blinking cursor while Farmora is typing */
-        .typing-cursor::after {
-            content: "\258D";
-            margin-left: 2px;
-            color: #00bf41;
+        /* Blinking cursor that follows the last word while Farmora is typing */
+        .live-cursor {
+            display: inline-block;
+            width: 0.5em;
+            height: 1.1em;
+            margin-left: 3px;
+            vertical-align: -0.18em;
+            border-radius: 2px;
+            background: #3d8b37;
             animation: blink 1s steps(2, start) infinite;
         }
         @keyframes blink { to { visibility: hidden; } }
 
+        /* Green bullets and numbers, dividers */
+        .markdown-content li::marker { color: #3d8b37; font-weight: 600; }
+        .markdown-content hr { border: 0; border-top: 1px dashed #d8ccaa; margin: 1.25rem 0; }
+
+        /* "I'm sorry..." answers look different from normal answers */
+        .refusal-card {
+            background: #fbf5e3;
+            border: 1px solid #e8d9b0;
+            color: #5b4630;
+            border-radius: 1rem;
+            padding: 0.9rem 1.1rem !important;
+        }
+
+        /* Sidebar slides away on wide screens when hidden */
+        #sidebar { transition: transform 0.2s ease, margin-left 0.2s ease; }
+        @media (min-width: 768px) {
+            body.sidebar-collapsed #sidebar { margin-left: -18rem; }
+            #open-sidebar { display: none; }
+            body.sidebar-collapsed #open-sidebar { display: inline-flex; }
+        }
+        @media (prefers-reduced-motion: reduce) { #sidebar { transition: none; } }
+
+        /* Thin, quiet scrollbars */
+        #chat-container, #chat-list { scrollbar-width: thin; scrollbar-color: #d8ccaa transparent; }
+
+        /* Faint sprouts on the background, like a field seen from above */
+        body { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='%233d8b37' stroke-opacity='0.08' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M30 46v-14M30 36c-7-2-10-8-10-14 7 1 10 6 10 14M30 33c6-3 10-7 11-14-7 0-10 6-11 14'/%3E%3Cpath d='M100 116v-14M100 106c-7-2-10-8-10-14 7 1 10 6 10 14M100 103c6-3 10-7 11-14-7 0-10 6-11 14'/%3E%3C/g%3E%3C/svg%3E"); }
+
+        /* Header: forest-green field with plowed rows and a wheat edge */
+        .farm-header {
+            position: relative; overflow: hidden;
+            background: linear-gradient(115deg, #1e4d2b 0%, #2f6b34 55%, #3d8b37 100%);
+            box-shadow: inset 0 -3px 0 #e8d9b0;
+        }
+        .farm-header::after {
+            content: ""; position: absolute; right: -30px; bottom: -42px; width: 260px; height: 100px;
+            border-radius: 50% 50% 0 0; pointer-events: none;
+            background: repeating-linear-gradient(-18deg, rgba(232, 217, 176, 0.22) 0 5px, transparent 5px 15px);
+        }
+        .farm-header > * { position: relative; z-index: 1; }
+
         /* "Thinking" dots */
         .thinking span {
             display: inline-block; width: 8px; height: 8px; margin-right: 4px;
-            border-radius: 50%; background: #00bf41; animation: bounce 1.2s infinite ease-in-out;
+            border-radius: 50%; background: #3d8b37; animation: bounce 1.2s infinite ease-in-out;
         }
-        .thinking span:nth-child(2) { animation-delay: 0.15s; }
-        .thinking span:nth-child(3) { animation-delay: 0.3s; }
+        .thinking span:nth-child(2) { animation-delay: 0.15s; background: #a7c957; }
+        .thinking span:nth-child(3) { animation-delay: 0.3s; background: #c9a54a; }
         @keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
 
         /* Message buttons appear on hover (always visible on touch screens) */
@@ -60,22 +133,49 @@
         .chat-item:hover .chat-actions, .chat-item.active .chat-actions,
         .chat-item:focus-within .chat-actions { opacity: 1; }
         @media (hover: none) { .chat-item .chat-actions { opacity: 1; } }
+
+        /* Editing a question */
+        .edit-box { animation: pop-in 0.15s ease-out; }
+
+        /* Confirmation dialog and notices */
+        #dialog .dialog-backdrop { opacity: 0; transition: opacity 0.15s; }
+        #dialog .dialog-panel { opacity: 0; transform: scale(0.96) translateY(6px); transition: opacity 0.15s, transform 0.15s; }
+        #dialog.open .dialog-backdrop { opacity: 1; }
+        #dialog.open .dialog-panel { opacity: 1; transform: none; }
+        #toast { transition: opacity 0.2s, transform 0.2s; }
+        #toast.hidden-toast { opacity: 0; transform: translate(-50%, 10px); pointer-events: none; }
+        @keyframes pop-in { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: none; } }
+        @media (prefers-reduced-motion: reduce) {
+            .edit-box, #dialog .dialog-backdrop, #dialog .dialog-panel, #toast { animation: none; transition: none; }
+        }
     </style>
 </head>
 
 <body class="bg-nudeGray h-dvh flex overflow-hidden font-poppins text-gray-800">
+    <!-- Hide the sidebar right away if it was hidden last time (no flash) -->
+    <script>
+        try {
+            if (localStorage.getItem("farmora-sidebar") === "hidden") {
+                document.body.classList.add("sidebar-collapsed");
+            }
+        } catch (error) { }
+    </script>
 
     <!-- ========== SIDEBAR ========== -->
     <div id="sidebar-backdrop" class="fixed inset-0 bg-black/30 z-20 hidden md:hidden"></div>
 
     <aside id="sidebar"
-           class="fixed md:static inset-y-0 left-0 z-30 w-72 shrink-0 bg-white border-r border-gray-200
+           class="fixed md:static inset-y-0 left-0 z-30 w-72 shrink-0 bg-[#fffdf6] border-r border-[#e7dfc8]
                   flex flex-col -translate-x-full md:translate-x-0 transition-transform duration-200">
 
         <div class="p-4 flex items-center justify-between">
-            <span class="text-xl font-semibold text-darkGreen">Farmora</span>
-            <button id="close-sidebar" class="md:hidden p-2 rounded-lg hover:bg-gray-100" title="Close sidebar">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            <span class="flex items-center gap-2 text-xl font-semibold text-darkGreen">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="" class="w-8 h-8">
+                Farmora
+            </span>
+            <button id="close-sidebar" class="p-2 rounded-lg text-gray-500 hover:bg-[#f3eedf] hover:text-darkGreen"
+                    title="Hide sidebar (Ctrl + B)" aria-label="Hide sidebar">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
             </button>
         </div>
 
@@ -93,7 +193,19 @@
             <!-- Filled by script.js -->
         </nav>
 
-        <div class="p-4 border-t border-gray-100">
+        <!-- Tip card -->
+        <div class="relative mx-4 mb-3 p-4 rounded-2xl bg-[#eef4e4] border border-[#d9e7c6] overflow-hidden">
+            <svg class="absolute -right-3 -bottom-3 w-20 h-20 opacity-30" viewBox="0 0 64 64" aria-hidden="true">
+                <path d="M32 60V30" stroke="#3d8b37" stroke-width="3" stroke-linecap="round"/>
+                <path d="M32 36C20 34 12 24 12 12c12 2 20 10 20 24ZM32 30c4-10 12-16 22-16 0 10-8 18-22 16Z" fill="#3d8b37"/>
+            </svg>
+            <p class="text-sm font-semibold text-darkGreen">🌱 Tip</p>
+            <p class="mt-1 text-xs leading-relaxed text-gray-600">
+                Ask about one crop or animal at a time for clearer answers. You can type in English or Tagalog.
+            </p>
+        </div>
+
+        <div class="p-4 border-t border-[#e7dfc8]">
             <button id="clear-all-btn"
                     class="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-sm text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
@@ -103,42 +215,127 @@
     </aside>
 
     <!-- ========== MAIN AREA ========== -->
-    <main class="flex-1 min-w-0 flex flex-col">
+    <main class="relative isolate flex-1 min-w-0 flex flex-col">
 
-        <nav class="shrink-0 m-4 mb-2 p-5 rounded-[1.5rem] flex items-center gap-3
-                    bg-[linear-gradient(128deg,rgba(0,191,65,1)_0%,rgba(13,250,0,1)_24%,rgba(239,239,239,1)_49%,rgba(13,250,0,1)_76%,rgba(0,191,65,1)_100%)]">
-            <button id="open-sidebar" class="md:hidden p-2 rounded-lg bg-white/30 text-white" title="Open sidebar">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        <!-- Soft hills behind the input box -->
+        <svg class="pointer-events-none absolute bottom-0 inset-x-0 w-full h-32 -z-10" viewBox="0 0 1200 130" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 70 Q200 30 420 60 T840 50 T1200 56 V130 H0Z" fill="#e3ebd3" opacity="0.7"/>
+            <path d="M0 96 Q260 62 560 88 T1200 80 V130 H0Z" fill="#d3e2bd" opacity="0.7"/>
+        </svg>
+
+        <header class="shrink-0 mx-4 mt-4 mb-2 px-4 py-3 rounded-2xl farm-header flex items-center gap-3 shadow-md shadow-green-900/10">
+            <button id="open-sidebar" class="p-2 rounded-lg text-white hover:bg-white/10"
+                    title="Show sidebar (Ctrl + B)" aria-label="Show sidebar">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
             </button>
-            <h1 class="text-white text-[1.75rem] leading-none">Farmora</h1>
-            <span id="chat-title" class="ml-auto truncate max-w-[50%] text-sm text-darkGreen/80 bg-white/60 px-3 py-1 rounded-full hidden"></span>
-        </nav>
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt=""
+                 class="w-9 h-9 rounded-full bg-white p-0.5">
+            <div class="leading-tight">
+                <h1 class="text-white text-lg font-semibold">Farmora</h1>
+                <p class="text-[0.7rem] tracking-wide text-wheat">Your farming guide</p>
+            </div>
+            <div class="ml-auto min-w-0 max-w-[60%] flex items-center gap-2">
+                <span id="chat-title" class="truncate text-sm text-white/90 bg-darkGreen/80 border border-white/10 px-3 py-1 rounded-full hidden"></span>
+                <!-- Delete the open conversation -->
+                <button id="delete-chat-btn" title="Delete this conversation" aria-label="Delete this conversation"
+                        class="hidden shrink-0 p-2 rounded-full text-white/80 hover:bg-white/10 hover:text-red-300 transition-colors">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                </button>
+            </div>
+        </header>
 
         <!-- Messages -->
         <div id="chat-container" class="flex-1 min-h-0 overflow-y-auto px-2 md:px-6 pb-4">
             <div id="messages" class="max-w-3xl mx-auto"></div>
 
             <!-- Welcome screen with starter questions -->
-            <div id="empty-state" class="max-w-3xl mx-auto h-full flex flex-col items-center justify-center text-center px-6">
-                <h2 class="text-3xl font-semibold text-darkGreen">Welcome to Farmora!</h2>
-                <p class="text-gray-500 mt-3 max-w-md">
-                    Your Agriculture and Farming Guide. Ask me anything about crops,
-                    soil management, fertilizers, pests, and sustainable farming.
+            <div id="empty-state" class="max-w-3xl mx-auto min-h-full flex flex-col items-center justify-center text-center px-4 sm:px-6 py-6">
+
+                <!-- Farm landscape: sky, sun, clouds, hills, rice terraces, barn and trees -->
+                <div class="relative shrink-0 w-full max-w-2xl h-40 sm:h-52 rounded-3xl overflow-hidden shadow-md border-2 border-wheat">
+                    <svg viewBox="0 0 800 220" preserveAspectRatio="xMidYMid slice" class="absolute inset-0 w-full h-full" aria-hidden="true">
+                        <defs>
+                            <linearGradient id="farm-sky" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0" stop-color="#cfe8e0"/>
+                                <stop offset="1" stop-color="#f7f1dc"/>
+                            </linearGradient>
+                        </defs>
+                        <rect width="800" height="220" fill="url(#farm-sky)"/>
+                        <circle cx="660" cy="58" r="46" fill="#f2c94c" opacity="0.25"/>
+                        <circle cx="660" cy="58" r="26" fill="#f2c94c"/>
+                        <g fill="#ffffff" opacity="0.85">
+                            <ellipse cx="170" cy="48" rx="38" ry="11"/><ellipse cx="200" cy="40" rx="26" ry="11"/>
+                            <ellipse cx="470" cy="34" rx="30" ry="9"/><ellipse cx="495" cy="28" rx="20" ry="9"/>
+                        </g>
+                        <path d="M0 130 Q120 88 250 112 T520 104 T800 96 V220 H0Z" fill="#b9d98a"/>
+                        <path d="M0 152 Q160 116 330 140 T640 128 T800 134 V220 H0Z" fill="#8cc063"/>
+                        <!-- barn -->
+                        <g transform="translate(590 104)">
+                            <rect x="0" y="16" width="46" height="32" fill="#b5452f"/>
+                            <path d="M-4 18 L23 0 L50 18Z" fill="#7a2e20"/>
+                            <rect x="16" y="28" width="14" height="20" fill="#f7f1dc"/>
+                            <path d="M16 28 L30 48 M30 28 L16 48" stroke="#b5452f" stroke-width="2"/>
+                        </g>
+                        <!-- trees -->
+                        <g>
+                            <rect x="545" y="112" width="4" height="16" fill="#8a5a36"/><circle cx="547" cy="108" r="12" fill="#2f6b34"/>
+                            <rect x="660" y="116" width="4" height="14" fill="#8a5a36"/><circle cx="662" cy="112" r="10" fill="#3d8b37"/>
+                            <rect x="318" y="118" width="4" height="16" fill="#8a5a36"/><circle cx="320" cy="113" r="12" fill="#2f6b34"/>
+                        </g>
+                        <!-- front field with rows -->
+                        <path d="M0 176 Q200 146 420 168 T800 160 V220 H0Z" fill="#3d8b37"/>
+                        <g fill="none" stroke="#2f6b34" stroke-width="3" stroke-linecap="round" opacity="0.8">
+                            <path d="M20 196 Q220 168 430 186 T790 178"/>
+                            <path d="M0 212 Q220 184 430 202 T800 196"/>
+                        </g>
+                        <!-- fence -->
+                        <g stroke="#8a5a36" stroke-width="3" stroke-linecap="round">
+                            <path d="M700 150v18M720 148v18M740 147v18M760 147v18"/>
+                            <path d="M694 156h72M694 163h72" stroke-width="2"/>
+                        </g>
+                    </svg>
+                    <img src="{{ url_for('static', filename='images/logo.png') }}" alt=""
+                         class="absolute left-6 sm:left-10 bottom-1 w-24 h-24 sm:w-32 sm:h-32 drop-shadow-lg">
+                </div>
+
+                <h2 class="mt-6 text-3xl sm:text-4xl font-semibold text-darkGreen">Welcome to Farmora!</h2>
+                <p class="text-gray-500 mt-2 max-w-md">
+                    Your farming guide, built on Department of Agriculture and ATI
+                    extension materials. Ask in English or Tagalog.
                 </p>
-                <div id="starter-suggestions" class="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl"></div>
+
+                <!-- Topic chips: each one asks a starter question -->
+                <div id="topic-chips" class="mt-6 flex flex-wrap justify-center gap-2 max-w-xl">
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#fbf3d9] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I prepare the land for hybrid rice?">🌾 Rice</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#fdf1c7] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="What is site-specific nutrient management for corn?">🌽 Corn</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#fde6dc] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I grow tomatoes?">🍅 Vegetables</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#fde2e6] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I grow strawberry runners?">🍓 Strawberry</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#e6efd6] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I make compost at home?">♻️ Composting</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#fbe4e0] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I raise organic hogs?">🐖 Hogs</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#fcefd6] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I raise organic chickens?">🐔 Poultry</button>
+                    <button class="px-3.5 py-1.5 rounded-full bg-[#ece6da] border border-black/5 text-sm text-gray-700 shadow-sm hover:-translate-y-0.5 hover:shadow-md hover:text-darkGreen transition-all" data-question="How do I raise organic goats and sheep?">🐐 Goats &amp; Sheep</button>
+                </div>
+                <div id="starter-suggestions" class="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl"></div>
             </div>
 
             <!-- Follow-up suggestions after an answer -->
             <div id="follow-ups" class="max-w-3xl mx-auto px-4 mt-2 flex flex-wrap gap-2"></div>
         </div>
 
+        <!-- Shown when the user scrolls up while reading -->
+        <button id="jump-btn" type="button" aria-label="Jump to latest message"
+                class="hidden absolute left-1/2 -translate-x-1/2 bottom-36 z-10 px-4 py-1.5 rounded-full
+                       bg-[#fffdf6] border border-[#e7dfc8] shadow-md text-sm text-darkGreen hover:bg-[#eef4e4]">
+            ↓ Jump to latest
+        </button>
+
         <!-- Input -->
         <div class="shrink-0 w-full max-w-3xl mx-auto">
             <form id="chat-form">
-                <div class="relative p-[3px] rounded-[1.5rem] focus-within:bg-[linear-gradient(90deg,rgba(0,191,65,1)_0%,rgba(237,136,2,1)_100%)] shadow-greenFade m-4 mt-2">
-                    <textarea id="user-input" rows="1" placeholder="Ask your farming question"
+                <div class="relative p-[2px] rounded-[1.5rem] bg-[#e7dfc8] focus-within:bg-greenSolid transition-colors shadow-lg shadow-green-900/5 m-4 mt-2">
+                    <textarea id="user-input" rows="1" placeholder="Ask a farming question in English or Tagalog"
                               class="block w-full min-h-[4.5rem] max-h-[10rem] rounded-[calc(1.5rem-2px)] pl-6 pr-20 py-6
-                                     outline-none border-none bg-nudeGray resize-none overflow-y-auto"></textarea>
+                                     outline-none border-none bg-[#fffdf6] resize-none overflow-y-auto"></textarea>
 
                     <!-- Send button (turns into a Stop button while Farmora answers) -->
                     <button type="submit" id="send-btn" title="Send"
@@ -149,14 +346,36 @@
                     </button>
                 </div>
             </form>
-            <p class="text-center text-xs text-gray-400 -mt-2 mb-3 px-4">
-                Farmora answers from its farming documents and can make mistakes. Check important advice with an expert.
+            <p class="text-center text-xs text-gray-500 -mt-2 mb-3 px-4">
+                <span class="hidden sm:inline">Enter to send · Shift + Enter for a new line · </span>🌱 Farmora can make mistakes. Check important advice with an expert or your local agriculture office.
             </p>
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <!-- ========== DIALOG (confirm delete, rename) ========== -->
+    <div id="dialog" class="fixed inset-0 z-50 hidden items-center justify-center p-4">
+        <div class="dialog-backdrop absolute inset-0 bg-black/40" data-dialog="cancel"></div>
+        <div class="dialog-panel relative w-full max-w-sm bg-white rounded-[1.5rem] shadow-xl p-6"
+             role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-message">
+            <h3 id="dialog-title" class="text-lg font-semibold text-darkGreen"></h3>
+            <p id="dialog-message" class="mt-2 text-sm text-gray-600 leading-relaxed"></p>
+            <input id="dialog-input" type="text" maxlength="100"
+                   class="hidden mt-4 w-full px-4 py-2.5 rounded-xl bg-nudeGray border border-gray-200 outline-none focus:border-greenSolid transition-colors">
+            <div class="mt-6 flex justify-end gap-2">
+                <button id="dialog-cancel" data-dialog="cancel"
+                        class="px-4 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-100 transition-colors">Cancel</button>
+                <button id="dialog-confirm"
+                        class="px-4 py-2 rounded-xl text-sm text-white bg-greenSolid hover:bg-darkGreen transition-colors">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Short notices, e.g. when something could not be saved -->
+    <div id="toast" role="status" aria-live="polite"
+         class="hidden-toast fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] px-4 py-2.5 rounded-xl bg-darkGreen text-white text-sm shadow-lg"></div>
+
+    <script src="{{ url_for('static', filename='vendor/marked.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='vendor/purify.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

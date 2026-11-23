@@ -4,7 +4,9 @@
 #
 # It uses SQLite, which comes with Python (nothing to install).
 
+import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 
 DATABASE_FILE = "farmora.db"
@@ -23,21 +25,21 @@ def get_connection():
     return connection
 
 
+# "with closing(...)" closes the connection even if the SQL fails,
+# and "with connection" commits, or rolls back after an error.
+
 def run(sql, values=()):
     """Run an INSERT, UPDATE or DELETE. Returns the new row's id."""
-    connection = get_connection()
-    cursor = connection.execute(sql, values)
-    connection.commit()
-    new_id = cursor.lastrowid
-    connection.close()
-    return new_id
+    with closing(get_connection()) as connection:
+        with connection:
+            cursor = connection.execute(sql, values)
+        return cursor.lastrowid
 
 
 def fetch_one(sql, values=()):
     """Run a SELECT and return one row as a dictionary (or None)."""
-    connection = get_connection()
-    row = connection.execute(sql, values).fetchone()
-    connection.close()
+    with closing(get_connection()) as connection:
+        row = connection.execute(sql, values).fetchone()
 
     if row is None:
         return None
@@ -46,9 +48,8 @@ def fetch_one(sql, values=()):
 
 def fetch_all(sql, values=()):
     """Run a SELECT and return all rows as a list of dictionaries."""
-    connection = get_connection()
-    rows = connection.execute(sql, values).fetchall()
-    connection.close()
+    with closing(get_connection()) as connection:
+        rows = connection.execute(sql, values).fetchall()
 
     results = []
     for row in rows:
@@ -81,9 +82,15 @@ def init_db():
             role        TEXT NOT NULL,
             content     TEXT NOT NULL,
             stopped     INTEGER NOT NULL DEFAULT 0,
+            sources     TEXT NOT NULL DEFAULT '[]',
             created_at  TEXT NOT NULL
         )
     """)
+
+    # Databases made by an older Farmora have no "sources" column yet
+    columns = [column["name"] for column in fetch_all("PRAGMA table_info(messages)")]
+    if "sources" not in columns:
+        run("ALTER TABLE messages ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'")
 
 
 # ---------------------------------------------------------------
@@ -130,28 +137,40 @@ def delete_all_chats():
 # Messages
 # role is "user" (a question) or "assistant" (Farmora's answer)
 # stopped is 1 if the user pressed Stop, otherwise 0
+# sources is the list of documents an answer came from
 # ---------------------------------------------------------------
 
-def add_message(chat_id, role, content, stopped=0):
+def read_sources(message):
+    # The sources are saved as JSON text, e.g. '["Tomato Production Guide"]'
+    if message is not None:
+        try:
+            message["sources"] = json.loads(message.get("sources") or "[]")
+        except ValueError:
+            message["sources"] = []
+    return message
+
+
+def add_message(chat_id, role, content, stopped=0, sources=None):
     return run(
-        "INSERT INTO messages (chat_id, role, content, stopped, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (chat_id, role, content, stopped, now())
+        "INSERT INTO messages (chat_id, role, content, stopped, sources, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, role, content, stopped, json.dumps(sources or []), now())
     )
 
 
 def get_messages(chat_id):
-    return fetch_all(
+    messages = fetch_all(
         "SELECT * FROM messages WHERE chat_id = ? ORDER BY id",
         (chat_id,)
     )
+    return [read_sources(message) for message in messages]
 
 
 def get_message(chat_id, message_id):
-    return fetch_one(
+    return read_sources(fetch_one(
         "SELECT * FROM messages WHERE chat_id = ? AND id = ?",
         (chat_id, message_id)
-    )
+    ))
 
 
 def update_message(chat_id, message_id, content):
@@ -178,11 +197,27 @@ def get_last_question(chat_id):
 
 
 def get_history_before(chat_id, message_id, limit):
-    # The last few messages before the given message, oldest first
+    # The last few question-and-answer pairs before the given message,
+    # oldest first. A question with no answer (for example, stopped
+    # before any text appeared) is left out, so the model doesn't
+    # mistake it for part of the current question.
     rows = fetch_all(
         "SELECT role, content FROM messages WHERE chat_id = ? AND id < ? "
-        "ORDER BY id DESC LIMIT ?",
-        (chat_id, message_id, limit)
+        "ORDER BY id",
+        (chat_id, message_id)
     )
-    rows.reverse()
-    return rows
+
+    history = []
+    for index, row in enumerate(rows):
+        next_row = rows[index + 1] if index + 1 < len(rows) else None
+        answered = next_row is not None and next_row["role"] == "assistant"
+
+        if row["role"] == "assistant" or answered:
+            history.append(row)
+
+    history = history[-limit:]
+
+    # Start with a question, not with half of a pair
+    if len(history) > 0 and history[0]["role"] == "assistant":
+        history.pop(0)
+    return history
